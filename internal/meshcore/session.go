@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -28,6 +29,14 @@ const keepAliveInterval = 60 * time.Second
 // underlying socket, belt-and-braces alongside the application-level ping
 // (some middleboxes track actual data packets, not bare ACKs).
 const tcpKeepAlivePeriod = 30 * time.Second
+
+// syncPollInterval is how often syncLoop drains queued channel messages via
+// CMD_SYNC_NEXT_MESSAGE even without a PUSH_CODE_MSG_WAITING notification —
+// a safety net in case that push was itself missed (the same class of
+// problem this whole mechanism exists to route around for GRP_TXT
+// messages), so a message queued on the device is never stuck waiting on a
+// single dropped "tickle". A var (not const) so tests can shorten it.
+var syncPollInterval = 10 * time.Second
 
 // SelfInfo is the parsed reply to CMD_APP_START (RESP_CODE_SELF_INFO / 0x05).
 type SelfInfo struct {
@@ -88,11 +97,13 @@ type Session struct {
 	conn net.Conn
 	fr   *FrameReader
 
-	cmdMu   sync.Mutex // serialises whole request/response cycles (write + wait) across all callers, including the keepalive loop
-	writeCh chan writeReq
-	respCh  chan []byte
-	logRxCh chan LogRxData
-	pushCh  chan []byte
+	cmdMu        sync.Mutex // serialises whole request/response cycles (write + wait) across all callers, including the keepalive loop and the sync-drain loop
+	writeCh      chan writeReq
+	respCh       chan []byte
+	logRxCh      chan LogRxData
+	channelMsgCh chan ChannelMessage // decoded via CMD_SYNC_NEXT_MESSAGE — see RegisterChannel/syncLoop
+	syncTrigger  chan struct{}       // signalled by readLoop on PUSH_CODE_MSG_WAITING; always has a real consumer (syncLoop)
+	pushCh       chan []byte
 	// pushConsumed tracks whether PushFrames has ever been called. Nobody in
 	// this codebase currently calls it — it exists for callers that need
 	// push codes LogRxFrames doesn't decode (e.g. PUSH_CODE_SEND_CONFIRMED)
@@ -129,13 +140,15 @@ func Dial(addr, appName string) (*Session, SelfInfo, error) {
 // net.Pipe in tests) and performs the CMD_APP_START handshake.
 func newSessionOverConn(conn net.Conn, appName string) (*Session, SelfInfo, error) {
 	s := &Session{
-		conn:    conn,
-		fr:      NewFrameReader(conn),
-		writeCh: make(chan writeReq),
-		respCh:  make(chan []byte, 1),
-		logRxCh: make(chan LogRxData, 32),
-		pushCh:  make(chan []byte, 32),
-		closed:  make(chan struct{}),
+		conn:         conn,
+		fr:           NewFrameReader(conn),
+		writeCh:      make(chan writeReq),
+		respCh:       make(chan []byte, 1),
+		logRxCh:      make(chan LogRxData, 32),
+		channelMsgCh: make(chan ChannelMessage, 32),
+		syncTrigger:  make(chan struct{}, 1),
+		pushCh:       make(chan []byte, 32),
+		closed:       make(chan struct{}),
 	}
 	go s.writeLoop()
 	go s.readLoop()
@@ -160,6 +173,7 @@ func newSessionOverConn(conn net.Conn, appName string) (*Session, SelfInfo, erro
 		return nil, SelfInfo{}, fmt.Errorf("meshcore: APP_START handshake: %w", err)
 	}
 	go s.keepAliveLoop()
+	go s.syncLoop()
 	return s, info, nil
 }
 
@@ -217,6 +231,14 @@ func (s *Session) readLoop() {
 					default:
 						logf("dropped LogRxData push: consumer is falling behind")
 					}
+				}
+			}
+			if frame[0] == PushMsgWaiting {
+				// Always has a real consumer (syncLoop) — unlike the generic
+				// pushCh forwarding below, this is never optional.
+				select {
+				case s.syncTrigger <- struct{}{}:
+				default: // a drain is already pending/in progress; it'll pick up this message too
 				}
 			}
 			if s.pushConsumed.Load() {
@@ -382,6 +404,146 @@ func (s *Session) SendChannelMessage(secret16 []byte, route RfRouteType, hashSiz
 		return err
 	}
 	return s.SendRawPacket(packet, 0)
+}
+
+// ChannelMessage is a channel/group text message retrieved via
+// CMD_SYNC_NEXT_MESSAGE — the device already decrypted it using the secret
+// registered (via RegisterChannel) at SlotIndex. This is a second,
+// independent inbound path alongside LogRxFrames: the device's own queue
+// (backed by firmware's addToOfflineQueue) persists across this process's
+// momentary hiccups in a way a local Go channel buffer alone cannot, so a
+// message is only lost if *both* paths miss it.
+type ChannelMessage struct {
+	SlotIndex     byte
+	TimestampUnix uint32
+	Text          string
+}
+
+// RegisterChannel ensures secret16 is registered on the device under name,
+// so the device will decrypt and queue GRP_TXT messages on that channel for
+// retrieval via ChannelMessages/CMD_SYNC_NEXT_MESSAGE. Reuses an existing
+// slot already holding this exact secret (idempotent across reconnects);
+// otherwise claims the first empty slot (1-MaxChannelSlots; index 0 is
+// conventionally reserved for the public channel, see MaxChannelSlots).
+// Never touches a slot holding a *different* secret — this must not clobber
+// another tool's channel registration on a shared device. Returns an error
+// if every slot is occupied by an unrelated channel.
+func (s *Session) RegisterChannel(secret16 []byte, name string) (byte, error) {
+	if len(secret16) != 16 {
+		return 0, fmt.Errorf("meshcore: channel secret must be exactly 16 bytes, got %d", len(secret16))
+	}
+
+	emptySlot := -1
+	for idx := byte(1); idx <= MaxChannelSlots; idx++ {
+		resp, err := s.request(BuildGetChannelFrame(idx), []byte{FrameChannelInfo, FrameErr}, DefaultCommandTimeout)
+		if err != nil {
+			return 0, fmt.Errorf("meshcore: getting channel slot %d: %w", idx, err)
+		}
+		if len(resp) > 0 && resp[0] == FrameErr {
+			continue
+		}
+		info, ok := ParseChannelInfo(resp)
+		if !ok {
+			continue
+		}
+		if bytes.Equal(info.Secret, secret16) {
+			return idx, nil // already registered from a prior run
+		}
+		if emptySlot == -1 && info.IsEmptyChannelSlot() {
+			emptySlot = int(idx)
+		}
+	}
+	if emptySlot == -1 {
+		return 0, fmt.Errorf("meshcore: no free channel slot for %q (all %d slots in use)", name, MaxChannelSlots)
+	}
+
+	frame, err := BuildSetChannelFrame(byte(emptySlot), name, secret16)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := s.request(frame, []byte{FrameOK, FrameErr}, DefaultCommandTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkOK(resp); err != nil {
+		return 0, fmt.Errorf("meshcore: registering channel %q at slot %d: %w", name, emptySlot, err)
+	}
+	return byte(emptySlot), nil
+}
+
+// syncLoop drains queued channel messages via CMD_SYNC_NEXT_MESSAGE,
+// woken by either a PUSH_CODE_MSG_WAITING notification (readLoop signals
+// syncTrigger) or syncPollInterval (a safety net in case that push was
+// itself missed).
+func (s *Session) syncLoop() {
+	ticker := time.NewTicker(syncPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.syncTrigger:
+			s.drainMessages()
+		case <-ticker.C:
+			s.drainMessages()
+		case <-s.closed:
+			return
+		}
+	}
+}
+
+// drainMessages repeatedly issues CMD_SYNC_NEXT_MESSAGE until the device
+// reports PACKET_NO_MORE_MSGS, so a single wake clears the *entire*
+// backlog, not just one message. Channel messages are emitted on
+// ChannelMessages (non-blocking, dropped+logged if the consumer's behind,
+// mirroring LogRxFrames' own pattern); contact (direct) messages and
+// channel data datagrams are logged and otherwise ignored — out of scope,
+// matching what the raw-log path already does (GRP_TXT/channel-text only).
+func (s *Session) drainMessages() {
+	for {
+		resp, err := s.request(BuildSyncNextMessageFrame(), []byte{
+			FrameChannelMsgRecv, FrameChannelMsgRecvV3,
+			FrameContactMsgRecv, FrameContactMsgRecvV3,
+			FrameChannelDataRecv, FrameNoMoreMessages, FrameErr,
+		}, DefaultCommandTimeout)
+		if err != nil {
+			logf("sync: CMD_SYNC_NEXT_MESSAGE failed: %v", err)
+			return
+		}
+		if len(resp) == 0 {
+			return
+		}
+		switch resp[0] {
+		case FrameNoMoreMessages:
+			return
+		case FrameChannelMsgRecv, FrameChannelMsgRecvV3:
+			msg, ok := ParseChannelMsgRecv(resp)
+			if !ok {
+				logf("sync: malformed channel message frame %#x", resp[0])
+				continue
+			}
+			cm := ChannelMessage{SlotIndex: msg.ChannelIndex, TimestampUnix: msg.TimestampUnix, Text: msg.Text}
+			select {
+			case s.channelMsgCh <- cm:
+			default:
+				logf("dropped synced channel message (slot %d): consumer is falling behind", cm.SlotIndex)
+			}
+		case FrameContactMsgRecv, FrameContactMsgRecvV3:
+			logf("sync: ignoring contact (direct) message — not supported")
+		case FrameChannelDataRecv:
+			logf("sync: ignoring channel data datagram — not supported")
+		case FrameErr:
+			logf("sync: CMD_SYNC_NEXT_MESSAGE returned an error")
+			return
+		default:
+			return
+		}
+	}
+}
+
+// ChannelMessages returns a channel of decoded channel/group text messages
+// retrieved via CMD_SYNC_NEXT_MESSAGE — see RegisterChannel and
+// ChannelMessage's own doc comment for how this relates to LogRxFrames.
+func (s *Session) ChannelMessages() <-chan ChannelMessage {
+	return s.channelMsgCh
 }
 
 // LogRxFrames returns a channel of decoded PUSH_CODE_LOG_RX_DATA (0x88)

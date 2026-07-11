@@ -3,6 +3,7 @@ package meshcore
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"strings"
@@ -516,5 +517,239 @@ func TestSession_ConcurrentRequests_AreSerialisedNotCorrupted(t *testing.T) {
 		if !seen {
 			t.Errorf("expected frame not received: %q", k)
 		}
+	}
+}
+
+// fakeChannelDevice simulates a device's channel table (CMD_GET_CHANNEL/
+// CMD_SET_CHANNEL, indices 1-MaxChannelSlots) and its queued-message store
+// (CMD_SYNC_NEXT_MESSAGE), for RegisterChannel/syncLoop tests. Absent slots
+// read back as empty (name "", secret all-zero), matching a never-configured
+// device slot.
+type fakeChannelDevice struct {
+	mu       sync.Mutex
+	slots    map[byte]ChannelInfo
+	setCalls []ChannelInfo // every CMD_SET_CHANNEL received, in order
+	queue    [][]byte      // pre-built response frames, returned in order by CMD_SYNC_NEXT_MESSAGE
+}
+
+func (d *fakeChannelDevice) handle(frame []byte) []byte {
+	if len(frame) == 0 {
+		return nil
+	}
+	switch frame[0] {
+	case CmdAppStart:
+		return selfInfoFrame("Node")
+	case CmdGetChannel:
+		idx := frame[1]
+		d.mu.Lock()
+		info, ok := d.slots[idx]
+		d.mu.Unlock()
+		if !ok {
+			info = ChannelInfo{Index: idx, Name: "", Secret: make([]byte, 16)}
+		}
+		resp := make([]byte, 2+channelNameFieldLen+16)
+		resp[0] = FrameChannelInfo
+		resp[1] = idx
+		copy(resp[2:2+channelNameFieldLen], info.Name)
+		copy(resp[2+channelNameFieldLen:], info.Secret)
+		return resp
+	case CmdSetChannel:
+		info, ok := ParseChannelInfo(append([]byte{FrameChannelInfo}, frame[1:]...))
+		if !ok {
+			return []byte{FrameErr, ErrCodeIllegalArg}
+		}
+		d.mu.Lock()
+		if d.slots == nil {
+			d.slots = map[byte]ChannelInfo{}
+		}
+		d.slots[info.Index] = info
+		d.setCalls = append(d.setCalls, info)
+		d.mu.Unlock()
+		return []byte{FrameOK}
+	case CmdSyncNextMessage:
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if len(d.queue) == 0 {
+			return []byte{FrameNoMoreMessages}
+		}
+		next := d.queue[0]
+		d.queue = d.queue[1:]
+		return next
+	default:
+		return nil
+	}
+}
+
+func buildChannelMsgRecvFrame(idx byte, timestampUnix uint32, text string) []byte {
+	f := []byte{FrameChannelMsgRecv, idx, 0xFF, 0, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(f[4:8], timestampUnix)
+	return append(f, []byte(text)...)
+}
+
+func TestSession_RegisterChannel_ClaimsFirstEmptySlot(t *testing.T) {
+	dev := &fakeChannelDevice{}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	secret := HashtagChannelSecret("#general")
+	idx, err := s.RegisterChannel(secret, "general")
+	if err != nil {
+		t.Fatalf("RegisterChannel: %v", err)
+	}
+	if idx != 1 {
+		t.Errorf("idx = %d, want 1 (first empty slot)", idx)
+	}
+	if len(dev.setCalls) != 1 {
+		t.Fatalf("expected exactly 1 CMD_SET_CHANNEL, got %d", len(dev.setCalls))
+	}
+	if dev.setCalls[0].Name != "general" || !bytes.Equal(dev.setCalls[0].Secret, secret) {
+		t.Errorf("SET_CHANNEL = %+v, want name=general secret=%x", dev.setCalls[0], secret)
+	}
+}
+
+func TestSession_RegisterChannel_ReusesExistingSlot(t *testing.T) {
+	secret := HashtagChannelSecret("#general")
+	dev := &fakeChannelDevice{slots: map[byte]ChannelInfo{
+		3: {Index: 3, Name: "general", Secret: secret},
+	}}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	idx, err := s.RegisterChannel(secret, "general")
+	if err != nil {
+		t.Fatalf("RegisterChannel: %v", err)
+	}
+	if idx != 3 {
+		t.Errorf("idx = %d, want 3 (existing slot, reused)", idx)
+	}
+	if len(dev.setCalls) != 0 {
+		t.Errorf("expected no CMD_SET_CHANNEL when the secret is already registered, got %d", len(dev.setCalls))
+	}
+}
+
+func TestSession_RegisterChannel_DoesNotClobberDifferentSecretInSlot1(t *testing.T) {
+	other := HashtagChannelSecret("#other")
+	dev := &fakeChannelDevice{slots: map[byte]ChannelInfo{
+		1: {Index: 1, Name: "other", Secret: other},
+	}}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	secret := HashtagChannelSecret("#general")
+	idx, err := s.RegisterChannel(secret, "general")
+	if err != nil {
+		t.Fatalf("RegisterChannel: %v", err)
+	}
+	if idx == 1 {
+		t.Fatal("must not overwrite slot 1, which holds an unrelated channel")
+	}
+	if len(dev.setCalls) != 1 || dev.setCalls[0].Index == 1 {
+		t.Errorf("expected registration to target a different slot, got %+v", dev.setCalls)
+	}
+}
+
+func TestSession_RegisterChannel_ErrorsWhenAllSlotsFull(t *testing.T) {
+	slots := map[byte]ChannelInfo{}
+	for i := byte(1); i <= MaxChannelSlots; i++ {
+		slots[i] = ChannelInfo{Index: i, Name: fmt.Sprintf("chan%d", i), Secret: HashtagChannelSecret(fmt.Sprintf("#chan%d", i))}
+	}
+	dev := &fakeChannelDevice{slots: slots}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	if _, err := s.RegisterChannel(HashtagChannelSecret("#new"), "new"); err == nil {
+		t.Fatal("expected an error when all slots are occupied by unrelated channels")
+	}
+}
+
+func TestSession_SyncLoop_DrainsOnPushMsgWaiting(t *testing.T) {
+	dev := &fakeChannelDevice{queue: [][]byte{
+		buildChannelMsgRecvFrame(2, 1700000000, "Alice: hi"),
+	}}
+	s, _, radio := dialOverPipe(t, dev.handle)
+
+	if err := radio.Push([]byte{PushMsgWaiting}); err != nil {
+		t.Fatalf("radio.Push: %v", err)
+	}
+
+	select {
+	case msg := <-s.ChannelMessages():
+		if msg.SlotIndex != 2 || msg.Text != "Alice: hi" || msg.TimestampUnix != 1700000000 {
+			t.Errorf("got %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for synced channel message")
+	}
+}
+
+func TestSession_SyncLoop_DrainsMultipleMessagesInOneCycle(t *testing.T) {
+	dev := &fakeChannelDevice{queue: [][]byte{
+		buildChannelMsgRecvFrame(1, 1700000000, "Alice: one"),
+		buildChannelMsgRecvFrame(1, 1700000001, "Bob: two"),
+		buildChannelMsgRecvFrame(1, 1700000002, "Carol: three"),
+	}}
+	s, _, radio := dialOverPipe(t, dev.handle)
+
+	if err := radio.Push([]byte{PushMsgWaiting}); err != nil {
+		t.Fatalf("radio.Push: %v", err)
+	}
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		select {
+		case msg := <-s.ChannelMessages():
+			got = append(got, msg.Text)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for message %d", i)
+		}
+	}
+	want := []string{"Alice: one", "Bob: two", "Carol: three"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSession_SyncLoop_PeriodicPollDrainsWithoutPush(t *testing.T) {
+	orig := syncPollInterval
+	syncPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { syncPollInterval = orig })
+
+	dev := &fakeChannelDevice{queue: [][]byte{
+		buildChannelMsgRecvFrame(1, 1700000000, "Alice: polled"),
+	}}
+	s, _, _ := dialOverPipe(t, dev.handle) // no PUSH_CODE_MSG_WAITING sent at all
+
+	select {
+	case msg := <-s.ChannelMessages():
+		if msg.Text != "Alice: polled" {
+			t.Errorf("Text = %q, want %q", msg.Text, "Alice: polled")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the periodic poll to drain the queued message")
+	}
+}
+
+func TestSession_SyncLoop_IgnoresContactAndDataMessages(t *testing.T) {
+	// A contact (direct) message and a channel-data datagram in the queue,
+	// followed by a real channel message — must skip the first two without
+	// blocking delivery of the one we do support.
+	contactFrame := []byte{FrameContactMsgRecv, 1, 2, 3, 4, 5, 6, 0xFF, 0, 0, 0, 0, 0}
+	dataFrame := []byte{FrameChannelDataRecv, 0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0}
+	dev := &fakeChannelDevice{queue: [][]byte{
+		contactFrame,
+		dataFrame,
+		buildChannelMsgRecvFrame(1, 1700000000, "Alice: real one"),
+	}}
+	s, _, radio := dialOverPipe(t, dev.handle)
+
+	if err := radio.Push([]byte{PushMsgWaiting}); err != nil {
+		t.Fatalf("radio.Push: %v", err)
+	}
+
+	select {
+	case msg := <-s.ChannelMessages():
+		if msg.Text != "Alice: real one" {
+			t.Errorf("Text = %q, want %q", msg.Text, "Alice: real one")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the real channel message past the ignored ones")
 	}
 }
