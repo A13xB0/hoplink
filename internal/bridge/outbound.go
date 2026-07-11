@@ -68,7 +68,7 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 	for _, chunk := range composeChunks(name, content, meshcoreMaxChunkBytes) {
 		b.markOutboundSent(meshcoreEchoKey(m.channelHash, chunk))
 		err := b.withTxGuard(func() error {
-			return session.SendChannelMessage(m.secret, b.route, b.hashSize, b.scopeKey, chunk)
+			return session.SendChannelMessage(m.secret, b.route, b.hashSize, m.scopeKey, chunk)
 		})
 		if err != nil {
 			logf("sending to meshcore channel %q: %v", m.cfg.Name, err)

@@ -168,7 +168,7 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `app_name`        | `hoplink` | Identifies this client during the `CMD_APP_START` handshake                          |
 | `route`           | `flood`    | `flood` \| `direct`                                                                   |
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
-| `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods) |
+| `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 
 ### `meshtastic:` (top-level)
 
@@ -220,6 +220,7 @@ each other and want to reduce RF interference between them.
 | `meshcore.hashtag`    | A hashtag channel name (secret derived from it) — exactly one of `hashtag`/`secret_hex`/`public` |
 | `meshcore.secret_hex` | An explicit 32-hex-char (16-byte) private channel secret                             |
 | `meshcore.public`     | Use MeshCore's well-known default public channel                                     |
+| `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
 | `meshtastic.enabled`  | Turn on the Meshtastic side of this bridge                                           |
 | `meshtastic.channel_name` | Name of a channel slot **already configured on the attached device**             |
 

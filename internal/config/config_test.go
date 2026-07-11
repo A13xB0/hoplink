@@ -606,6 +606,61 @@ func TestLoad_FloodScopeIsConfigurable(t *testing.T) {
 	}
 }
 
+func TestBridge_ResolvedScopeKey_UsesGlobalWhenBridgeUnset(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
+	got := b.ResolvedScopeKey("globalregion")
+	want := meshcore.FloodScopeKey("globalregion")
+	if hex.EncodeToString(got) != hex.EncodeToString(want) {
+		t.Errorf("ResolvedScopeKey() = %x, want global's %x", got, want)
+	}
+}
+
+func TestBridge_ResolvedScopeKey_BridgeOverrideWinsOverGlobal(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true, FloodScope: "bridgeregion"}}
+	got := b.ResolvedScopeKey("globalregion")
+	want := meshcore.FloodScopeKey("bridgeregion")
+	if hex.EncodeToString(got) != hex.EncodeToString(want) {
+		t.Errorf("ResolvedScopeKey() = %x, want bridge override's %x", got, want)
+	}
+}
+
+func TestBridge_ResolvedScopeKey_NilWhenBothUnset(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
+	if got := b.ResolvedScopeKey(""); got != nil {
+		t.Errorf("ResolvedScopeKey() = %x, want nil when neither bridge nor global flood_scope is set", got)
+	}
+}
+
+func TestLoad_BridgeFloodScopeOverridesGlobal(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+  flood_scope: "globalregion"
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+      flood_scope: "bridgeregion"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := got.Bridges[0]
+	if b.MeshCore.FloodScope != "bridgeregion" {
+		t.Errorf("MeshCore.FloodScope = %q, want %q", b.MeshCore.FloodScope, "bridgeregion")
+	}
+	want := meshcore.FloodScopeKey("bridgeregion")
+	if hex.EncodeToString(b.ResolvedScopeKey(got.Meshcore.FloodScope)) != hex.EncodeToString(want) {
+		t.Errorf("ResolvedScopeKey() = %x, want the bridge override %x, not the global scope", b.ResolvedScopeKey(got.Meshcore.FloodScope), want)
+	}
+}
+
 func TestMeshtastic_Configured(t *testing.T) {
 	if (Meshtastic{}).Configured() {
 		t.Error("Configured() should be false when host is unset")

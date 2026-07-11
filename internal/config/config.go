@@ -76,12 +76,20 @@ func (m Meshcore) RouteType() (meshcore.RfRouteType, error) {
 }
 
 // ScopeKey resolves the 16-byte flood-scope key for FloodScope, or nil when
-// unset (meaning unscoped ROUTE_TYPE_FLOOD, MeshCore's legacy default).
+// unset (meaning unscoped ROUTE_TYPE_FLOOD, MeshCore's legacy default). This
+// is the global default; a bridge may override it via
+// Bridge.MeshCore.FloodScope (see Bridge.ResolvedScopeKey).
 func (m Meshcore) ScopeKey() []byte {
-	if strings.TrimSpace(m.FloodScope) == "" {
+	return scopeKeyForName(m.FloodScope)
+}
+
+// scopeKeyForName resolves a flood-scope name to its 16-byte key, or nil for
+// a blank name (unscoped ROUTE_TYPE_FLOOD).
+func scopeKeyForName(scope string) []byte {
+	if strings.TrimSpace(scope) == "" {
 		return nil
 	}
-	return meshcore.FloodScopeKey(m.FloodScope)
+	return meshcore.FloodScopeKey(scope)
 }
 
 // Meshtastic holds the attached Meshtastic device's TCP client-API
@@ -170,6 +178,10 @@ type BridgeMeshCore struct {
 	Hashtag   string `yaml:"hashtag"`
 	SecretHex string `yaml:"secret_hex"`
 	Public    bool   `yaml:"public"`
+	// FloodScope optionally overrides the top-level meshcore.flood_scope for
+	// this bridge only; "" means use the global default (see
+	// Bridge.ResolvedScopeKey).
+	FloodScope string `yaml:"flood_scope"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -241,6 +253,18 @@ func (b Bridge) ResolvedSenderFormat(global string) string {
 		return b.SenderFormat
 	}
 	return global
+}
+
+// ResolvedScopeKey returns this bridge's effective MeshCore flood-scope key:
+// derived from its own meshcore.flood_scope override if set, else from
+// globalScope (the top-level meshcore.flood_scope). Only meaningful when
+// MeshCore.Enabled.
+func (b Bridge) ResolvedScopeKey(globalScope string) []byte {
+	scope := b.MeshCore.FloodScope
+	if scope == "" {
+		scope = globalScope
+	}
+	return scopeKeyForName(scope)
 }
 
 // DiscordEnabled reports whether any bridge has a Discord side configured.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/hectospark/hoplink/internal/config"
 	"github.com/hectospark/hoplink/internal/discord"
+	"github.com/hectospark/hoplink/internal/meshcore"
 )
 
 func TestBridge_WithTxGuard_SerializesConcurrentSends(t *testing.T) {
@@ -141,6 +142,49 @@ func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
 	}
 	if b.txGuardGap != 250*time.Millisecond {
 		t.Errorf("txGuardGap = %v, want 250ms", b.txGuardGap)
+	}
+}
+
+func TestNew_WiresPerBridgeFloodScopeOverride(t *testing.T) {
+	cfg := &config.Config{
+		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3, FloodScope: "globalregion"},
+		Discord:  config.Discord{BotToken: "abc"},
+		Limits:   config.Limits{MaxMessageBytes: 320},
+		Bridges: []config.Bridge{
+			{
+				Name:              "default-scope",
+				DiscordChannelID:  "1",
+				DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+				MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#a"},
+			},
+			{
+				Name:              "override-scope",
+				DiscordChannelID:  "2",
+				DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+				MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#b", FloodScope: "bridgeregion"},
+			},
+		},
+	}
+	bot, err := discord.NewBot("fake-token", true)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	b, err := New(cfg, bot)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	globalKey := meshcore.FloodScopeKey("globalregion")
+	overrideKey := meshcore.FloodScopeKey("bridgeregion")
+
+	mDefault := b.byChan["1"]
+	if string(mDefault.scopeKey) != string(globalKey) {
+		t.Errorf("bridge %q scopeKey = %x, want the global default %x", mDefault.cfg.Name, mDefault.scopeKey, globalKey)
+	}
+	mOverride := b.byChan["2"]
+	if string(mOverride.scopeKey) != string(overrideKey) {
+		t.Errorf("bridge %q scopeKey = %x, want its own override %x", mOverride.cfg.Name, mOverride.scopeKey, overrideKey)
 	}
 }
 

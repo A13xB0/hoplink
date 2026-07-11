@@ -31,13 +31,15 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # header as they relay it, so this is the one place
                       # that actually controls it. 1-byte hashes are rejected.
   flood_scope: ""     # optional named flood scope/region (e.g. "myregion").
-                      # Leave blank for unscoped ROUTE_TYPE_FLOOD (the
-                      # MeshCore default). Set this if your repeaters run in
-                      # "scope-only" mode — they reject unscoped flood
-                      # packets outright, so on such a mesh our messages
-                      # would otherwise never make it past the first hop.
-                      # Must match the scope name your repeaters are
-                      # configured with (CMD_SET_DEFAULT_FLOOD_SCOPE).
+                      # This is the DEFAULT for every bridge; a bridge can
+                      # override it with its own meshcore.flood_scope (see
+                      # bridges below). Leave blank for unscoped
+                      # ROUTE_TYPE_FLOOD (the MeshCore default). Set this if
+                      # your repeaters run in "scope-only" mode — they reject
+                      # unscoped flood packets outright, so on such a mesh
+                      # our messages would otherwise never make it past the
+                      # first hop. Must match the scope name your repeaters
+                      # are configured with (CMD_SET_DEFAULT_FLOOD_SCOPE).
 
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
@@ -88,6 +90,8 @@ bridges:
     meshcore:
       enabled: true
       hashtag: "#general"
+      # flood_scope: "myregion"  # optional per-bridge override of the
+                                  # top-level meshcore.flood_scope above
     # meshtastic:             # uncomment to ALSO relay this same Discord channel to a Meshtastic
     #   enabled: true         # channel — and, since both would then be enabled on this bridge,
     #   channel_name: "LongFast"  # MeshCore <-> Meshtastic messages relay directly too

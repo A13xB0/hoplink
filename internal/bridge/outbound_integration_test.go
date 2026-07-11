@@ -107,6 +107,7 @@ func TestBridge_HandleDiscordMessage_AppliesConfiguredFloodScope(t *testing.T) {
 		cfg:             config.Bridge{Name: "general", DiscordChannelID: "chan-1"},
 		secret:          secret,
 		channelHash:     chHash,
+		scopeKey:        meshcore.FloodScopeKey("myregion"),
 		webhook:         discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
 		discordEnabled:  true,
 		maxBytes:        320,
@@ -116,7 +117,6 @@ func TestBridge_HandleDiscordMessage_AppliesConfiguredFloodScope(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	b.route = meshcore.RouteFlood
 	b.hashSize = 3
-	b.scopeKey = meshcore.FloodScopeKey("myregion")
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  "chan-1",
@@ -133,7 +133,7 @@ func TestBridge_HandleDiscordMessage_AppliesConfiguredFloodScope(t *testing.T) {
 		if pkt.Route != meshcore.RouteTransportFlood {
 			t.Errorf("Route = %v, want RouteTransportFlood when a scope is configured", pkt.Route)
 		}
-		wantCode, err := meshcore.CalcTransportCode(b.scopeKey, meshcore.PayloadTypeGrpTxt, pkt.Payload)
+		wantCode, err := meshcore.CalcTransportCode(m.scopeKey, meshcore.PayloadTypeGrpTxt, pkt.Payload)
 		if err != nil {
 			t.Fatalf("CalcTransportCode: %v", err)
 		}
