@@ -32,8 +32,15 @@ type Config struct {
 	// (e.g. "Alice (MC)"), or "full" (e.g. "Alice (MeshCore)"). Default
 	// "none" — this must stay backward compatible with existing bridges.
 	// Individual bridges may override this via Bridge.SenderFormat.
-	SenderFormat string   `yaml:"sender_format"`
-	Bridges      []Bridge `yaml:"bridges"`
+	SenderFormat string `yaml:"sender_format"`
+	// Debug enables extra-verbose logging of every inbound message the
+	// bridge suppresses and why (self-echo, duplicate delivery, or no
+	// configured channel matched it) — silent by default since self-echo
+	// suppression alone fires on every message this bridge itself relays.
+	// Meant for diagnosing "a message reached other devices but never made
+	// it to Discord/the other mesh". Default false.
+	Debug   bool     `yaml:"debug"`
+	Bridges []Bridge `yaml:"bridges"`
 }
 
 // validSenderFormat reports an error if s isn't a recognised sender_format

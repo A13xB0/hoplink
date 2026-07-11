@@ -43,18 +43,18 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		if len(lrx.Packet.Payload) > 0 {
 			wireHash = lrx.Packet.Payload[0]
 		}
-		logf("meshcore: GRP_TXT packet (wire channel_hash %#x, %d-byte payload) didn't decrypt against any configured meshcore.hashtag/secret_hex/public — check it matches the sender's actual channel", wireHash, len(lrx.Packet.Payload))
+		b.debugf("meshcore: GRP_TXT packet (wire channel_hash %#x, %d-byte payload) didn't decrypt against any configured meshcore.hashtag/secret_hex/public — check it matches the sender's actual channel", wireHash, len(lrx.Packet.Payload))
 		return
 	}
 
 	echoKey := meshcoreEchoKey(channelHash, dec.Text)
 	if b.consumeSelfEcho(echoKey) {
-		logf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", dec.Text, channelHash, selfEchoTTL)
+		b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", dec.Text, channelHash, selfEchoTTL)
 		return
 	}
 	dedupKey := meshcoreDedupKey(channelHash, dec.TimestampUnix, dec.Text)
 	if b.isDuplicateInbound(dedupKey) {
-		logf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", dec.Text, channelHash, inboundDedupTTL)
+		b.debugf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", dec.Text, channelHash, inboundDedupTTL)
 		return
 	}
 
@@ -114,12 +114,12 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 
 	echoKey := meshtasticEchoKey(msg.ChannelIndex, msg.Text)
 	if b.consumeSelfEcho(echoKey) {
-		logf("meshtastic: suppressing %q on channel index %d as our own echo (sent it ourselves within the last %s)", msg.Text, msg.ChannelIndex, selfEchoTTL)
+		b.debugf("meshtastic: suppressing %q on channel index %d as our own echo (sent it ourselves within the last %s)", msg.Text, msg.ChannelIndex, selfEchoTTL)
 		return
 	}
 	dedupKey := meshtasticDedupKey(msg.ChannelIndex, msg.PacketID, msg.Text)
 	if b.isDuplicateInbound(dedupKey) {
-		logf("meshtastic: suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
+		b.debugf("meshtastic: suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
 		return
 	}
 

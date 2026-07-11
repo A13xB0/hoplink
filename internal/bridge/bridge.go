@@ -65,6 +65,7 @@ type Bridge struct {
 	notify   notifier
 	route    meshcore.RfRouteType
 	hashSize int // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	debug    bool
 	byName   []*mapping
 	byChan   map[string]*mapping // Discord channel ID -> mapping
 
@@ -119,6 +120,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	b := &Bridge{
 		route:          route,
 		hashSize:       cfg.Meshcore.PathHashBytes,
+		debug:          cfg.Debug,
 		txGuardEnabled: cfg.Coexistence.Enabled(),
 		txGuardGap:     cfg.Coexistence.GapDuration(),
 		byChan:         make(map[string]*mapping),
@@ -279,4 +281,15 @@ func (b *Bridge) sweep() {
 
 func logf(format string, args ...any) {
 	log.Printf("[bridge] "+format, args...)
+}
+
+// debugf logs like logf but only when config's top-level debug: true is
+// set — for extra-verbose per-message diagnostics (why an inbound message
+// was suppressed) that would otherwise be noise in normal operation, since
+// e.g. self-echo suppression fires on every message this bridge itself
+// relays.
+func (b *Bridge) debugf(format string, args ...any) {
+	if b.debug {
+		logf(format, args...)
+	}
 }

@@ -111,6 +111,33 @@ func TestBridge_WithTxGuard_PropagatesSendError(t *testing.T) {
 	}
 }
 
+func TestNew_WiresDebugFromConfig(t *testing.T) {
+	cfg := &config.Config{
+		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Discord:  config.Discord{BotToken: "abc"},
+		Limits:   config.Limits{MaxMessageBytes: 320},
+		Debug:    true,
+		Bridges: []config.Bridge{{
+			Name:              "general",
+			DiscordChannelID:  "1",
+			DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+			MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#general"},
+		}},
+	}
+	bot, err := discord.NewBot("fake-token", true)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	b, err := New(cfg, bot)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !b.debug {
+		t.Error("debug should be true when config.Debug is true")
+	}
+}
+
 func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
 	falseVal := false
 	cfg := &config.Config{

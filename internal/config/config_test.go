@@ -659,6 +659,27 @@ func TestMeshcore_ScopeKey_ResolvesToFloodScopeKey(t *testing.T) {
 	}
 }
 
+func TestLoad_DebugDefaultsToFalse(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Debug {
+		t.Error("Debug should default to false")
+	}
+}
+
+func TestLoad_DebugIsConfigurable(t *testing.T) {
+	cfg := validMinimal + "debug: true\n"
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Debug {
+		t.Error("Debug = false, want true")
+	}
+}
+
 func TestLoad_FloodScopeDefaultsToUnset(t *testing.T) {
 	cfg, err := Load(writeTemp(t, validMinimal))
 	if err != nil {

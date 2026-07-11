@@ -252,6 +252,7 @@ func TestBridge_Sweep_ExpiresOldEntries(t *testing.T) {
 func TestBridge_HandleMeshcorePacket_LogsWhenNoChannelMatches(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	b.debug = true
 	buf := captureLog(t)
 
 	// Encrypted with an unrelated secret; won't decrypt against #general.
@@ -267,6 +268,7 @@ func TestBridge_HandleMeshcorePacket_LogsWhenNoChannelMatches(t *testing.T) {
 func TestBridge_HandleMeshcorePacket_LogsSelfEchoSuppression(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	b.debug = true
 	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
 	buf := captureLog(t)
 
@@ -281,6 +283,7 @@ func TestBridge_HandleMeshcorePacket_LogsSelfEchoSuppression(t *testing.T) {
 func TestBridge_HandleMeshcorePacket_LogsDuplicateSuppression(t *testing.T) {
 	m, posts := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	b.debug = true
 
 	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
 	b.handleMeshcorePacket(lrx) // first delivery, consumes the post
@@ -295,5 +298,19 @@ func TestBridge_HandleMeshcorePacket_LogsDuplicateSuppression(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "suppressing") || !strings.Contains(buf.String(), "duplicate delivery") {
 		t.Errorf("expected a duplicate-delivery suppression log line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_StaysSilentWithoutDebug(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m) // debug defaults to false
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+	buf := captureLog(t)
+
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no log output without debug: true, got: %s", buf.String())
 	}
 }

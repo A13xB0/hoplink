@@ -27,6 +27,14 @@ sender_format: none   # none | short | full — how a relayed message's origin
                        # Meshtastic) uniformly. Override per-bridge with
                        # sender_format below.
 
+debug: false   # when true, logs every inbound message this bridge suppresses
+               # and why (our own echo, a duplicate delivery, or no
+               # configured channel matched it) — useful for diagnosing "a
+               # message reached other devices but never made it to Discord/
+               # the other mesh". Silent by default: self-echo suppression
+               # alone fires on every message this bridge itself relays, so
+               # this is noisy in normal operation.
+
 meshcore:                # required only if some bridge has meshcore.enabled: true
   host: 192.168.4.1   # your companion radio's IP (its built-in WiFi/TCP server)
   port: 5000          # default MeshCore companion TCP port
