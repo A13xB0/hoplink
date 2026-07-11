@@ -118,7 +118,7 @@ Or use a published image (see [Releases](../../releases) for available
 version tags):
 
 ```sh
-docker pull ghcr.io/hectospark/hoplink:latest
+docker pull ghcr.io/a13xb0/hoplink:latest
 ```
 
 Run it with your `config.yaml` mounted read-only into the container at
@@ -129,7 +129,7 @@ docker run -d \
   --name hoplink \
   --restart unless-stopped \
   -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  ghcr.io/hectospark/hoplink:latest
+  ghcr.io/a13xb0/hoplink:latest
 ```
 
 Or with Docker Compose:
