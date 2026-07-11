@@ -29,6 +29,18 @@ no Discord channel involved at all.
   *other* surface it lands on — e.g. a MeshCore message from "Alice" can show
   up as "Alice", "Alice (MC)", or "Alice (MeshCore)" on Discord and on
   Meshtastic, depending on the setting.
+- **Sibling bridges**: if two (or more) bridges reference the same MeshCore
+  channel and/or the same Meshtastic channel_name — e.g. bridging one mesh
+  channel into two different Discord servers — a message landing on any one
+  of them relays directly to every sibling's Discord channel too, not just
+  its own. This is an immediate, same-process relay, not dependent on the
+  message actually being heard back over RF.
+- **Read-only sides**: any side of a bridge (`meshcore`, `meshtastic`, or
+  Discord) can be marked read-only, so it only ever receives and never
+  transmits — useful for a one-way monitoring feed.
+- A whole bridge can be disabled (`enabled: false`) to keep a not-yet-finished
+  or temporarily-unwanted entry in the config without it being built,
+  connected to, or validated for completeness.
 
 ## How the two protocols differ here
 
@@ -214,6 +226,7 @@ each other and want to reduce RF interference between them.
 | `enabled`             | Optional, defaults to `true`. Set to `false` to keep a not-yet-finished or temporarily-unwanted bridge in the config without it being built, connected to, or validated for completeness |
 | `discord_channel_id`  | Optional — the Discord channel to bridge. Leave unset (along with `discord_webhook_url`) for a bridge with no Discord side; if set, `discord_webhook_url` must be too |
 | `discord_webhook_url` | Optional — that channel's webhook (for posting under node names); required iff `discord_channel_id` is set |
+| `discord_read_only`   | Optional, defaults to `false`. If `true`, this channel only ever receives posts — messages typed there are never relayed out to the mesh or to a sibling bridge |
 | `guild_id`            | Optional; if set, messages from any other guild are ignored (a sanity check — not needed for correct routing, since Discord channel IDs are already globally unique) |
 | `max_message_bytes`   | Optional per-bridge override of `limits.max_message_bytes`                           |
 | `sender_format`       | Optional per-bridge override of the top-level `sender_format`                        |
@@ -222,8 +235,10 @@ each other and want to reduce RF interference between them.
 | `meshcore.secret_hex` | An explicit 32-hex-char (16-byte) private channel secret                             |
 | `meshcore.public`     | Use MeshCore's well-known default public channel                                     |
 | `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
+| `meshcore.read_only`  | Optional, defaults to `false`. If `true`, this side only ever receives from MeshCore, never transmits |
 | `meshtastic.enabled`  | Turn on the Meshtastic side of this bridge                                           |
 | `meshtastic.channel_name` | Name of a channel slot **already configured on the attached device**             |
+| `meshtastic.read_only` | Optional, defaults to `false`. If `true`, this side only ever receives from Meshtastic, never transmits |
 
 A bridge needs at least two of its three sides enabled: Discord+MeshCore,
 Discord+Meshtastic, MeshCore+Meshtastic (no Discord fields at all), or all
@@ -231,6 +246,14 @@ three. Whenever both MeshCore and Meshtastic are enabled on a bridge,
 messages also relay directly between them — not just via Discord — so with
 all three enabled, Discord, MeshCore, and Meshtastic all stay in sync with
 each other.
+
+Two or more bridges that reference the *same* MeshCore channel (matching
+hashtag/secret) and/or the same Meshtastic `channel_name` are treated as
+siblings, even across different `name`s, Discord servers, or `guild_id`s: a
+message landing on any one of them — from its own Discord channel, from the
+mesh, or from another sibling — relays directly to every sibling's Discord
+channel too. This is how you bridge one MeshCore or Meshtastic channel into
+more than one Discord server.
 
 ## Testing
 

@@ -687,6 +687,56 @@ func TestLoad_FloodScopeIsConfigurable(t *testing.T) {
 	}
 }
 
+func TestLoad_ReadOnlyFieldsAreConfigurable(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+meshtastic:
+  host: 5.6.7.8
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    discord_read_only: true
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+      read_only: true
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
+      read_only: true
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := got.Bridges[0]
+	if !b.DiscordReadOnly {
+		t.Error("DiscordReadOnly = false, want true")
+	}
+	if !b.MeshCore.ReadOnly {
+		t.Error("MeshCore.ReadOnly = false, want true")
+	}
+	if !b.Meshtastic.ReadOnly {
+		t.Error("Meshtastic.ReadOnly = false, want true")
+	}
+}
+
+func TestLoad_ReadOnlyFieldsDefaultToFalse(t *testing.T) {
+	got, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := got.Bridges[0]
+	if b.DiscordReadOnly || b.MeshCore.ReadOnly || b.Meshtastic.ReadOnly {
+		t.Errorf("expected all read_only fields to default to false, got DiscordReadOnly=%v MeshCore.ReadOnly=%v Meshtastic.ReadOnly=%v",
+			b.DiscordReadOnly, b.MeshCore.ReadOnly, b.Meshtastic.ReadOnly)
+	}
+}
+
 func TestBridge_ResolvedScopeKey_UsesGlobalWhenBridgeUnset(t *testing.T) {
 	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
 	got := b.ResolvedScopeKey("globalregion")

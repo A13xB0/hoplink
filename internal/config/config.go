@@ -182,6 +182,10 @@ type BridgeMeshCore struct {
 	// this bridge only; "" means use the global default (see
 	// Bridge.ResolvedScopeKey).
 	FloodScope string `yaml:"flood_scope"`
+	// ReadOnly, when true, means this bridge only ever receives from
+	// MeshCore — messages from Discord or a linked Meshtastic channel are
+	// never transmitted out over this bridge's MeshCore side.
+	ReadOnly bool `yaml:"read_only"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -191,6 +195,10 @@ type BridgeMeshCore struct {
 type BridgeMeshtastic struct {
 	Enabled     bool   `yaml:"enabled"`
 	ChannelName string `yaml:"channel_name"`
+	// ReadOnly, when true, means this bridge only ever receives from
+	// Meshtastic — messages from Discord or a linked MeshCore channel are
+	// never transmitted out over this bridge's Meshtastic side.
+	ReadOnly bool `yaml:"read_only"`
 }
 
 // Bridge relays between a MeshCore channel, a Meshtastic channel, and/or a
@@ -198,7 +206,12 @@ type BridgeMeshtastic struct {
 // (MeshCore.Enabled / Meshtastic.Enabled / a non-empty DiscordChannelID). A
 // bridge needs at least two of the three sides: Discord+MeshCore,
 // Discord+Meshtastic, MeshCore+Meshtastic (Discord omitted entirely), or all
-// three.
+// three. Any side can be made ReadOnly (receive-only, never transmits). Two
+// or more bridges that reference the same MeshCore channel (matching
+// secret) and/or the same Meshtastic channel_name are treated as siblings:
+// a message landing on any one of them relays directly to every sibling's
+// Discord channel too — e.g. bridging one MeshCore channel into two
+// different Discord guilds.
 type Bridge struct {
 	Name string `yaml:"name"`
 	// Enabled toggles this whole bridge entry on or off; nil/unset defaults
@@ -215,6 +228,11 @@ type Bridge struct {
 	GuildID           string `yaml:"guild_id"`          // optional; if set, incoming messages from a different guild are ignored (defensive check, not required for routing correctness — Discord channel IDs are already globally unique)
 	MaxMessageBytes   int    `yaml:"max_message_bytes"` // optional per-bridge override of limits.max_message_bytes; 0 = use the global default
 	SenderFormat      string `yaml:"sender_format"`     // optional per-bridge override of the top-level sender_format; "" = use the global value
+	// DiscordReadOnly, when true, means this bridge's Discord channel only
+	// ever receives posts — messages typed there are never relayed out to
+	// the mesh, or to a sibling bridge's Discord channel sharing the same
+	// MeshCore/Meshtastic channel.
+	DiscordReadOnly bool `yaml:"discord_read_only"`
 
 	MeshCore   BridgeMeshCore   `yaml:"meshcore"`
 	Meshtastic BridgeMeshtastic `yaml:"meshtastic"`

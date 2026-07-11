@@ -12,49 +12,82 @@ import (
 
 // handleMeshcorePacket is called for every RF packet the MeshCore radio
 // hears. It tries to decrypt GRP_TXT payloads against each meshcore-enabled
-// bridge's secret and, on a match, reposts the message to that bridge's
-// Discord webhook (if it has one) and, if the bridge also has Meshtastic
-// enabled, relays it there too.
+// bridge's secret; a successful decrypt identifies the channel itself
+// (channelHash), not a single "owning" bridge, since multiple bridges may
+// share the same MeshCore channel (e.g. relaying one mesh channel into two
+// different Discord guilds). The message is then reposted to every such
+// bridge's Discord webhook (if it has one) and relayed to every such
+// bridge's Meshtastic channel (if it has one and isn't read-only) — each
+// distinct physical Meshtastic channel is only sent to once, even if more
+// than one sibling bridge points at it.
 func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
 	}
 
+	var dec meshcore.GroupTextDecrypt
+	var channelHash byte
+	found := false
 	for _, m := range b.byName {
 		if !m.meshcoreEnabled {
 			continue
 		}
-		dec, ok := meshcore.DecryptGroupText(m.secret, lrx.Packet.Payload)
+		d, ok := meshcore.DecryptGroupText(m.secret, lrx.Packet.Payload)
 		if !ok {
 			continue // wrong channel secret; try the next mapping
 		}
+		dec, channelHash, found = d, m.channelHash, true
+		break
+	}
+	if !found {
+		return
+	}
 
-		echoKey := meshcoreEchoKey(m.channelHash, dec.Text)
-		if b.consumeSelfEcho(echoKey) {
-			return
-		}
-		dedupKey := meshcoreDedupKey(m.channelHash, dec.TimestampUnix, dec.Text)
-		if b.isDuplicateInbound(dedupKey) {
-			return
-		}
+	echoKey := meshcoreEchoKey(channelHash, dec.Text)
+	if b.consumeSelfEcho(echoKey) {
+		return
+	}
+	dedupKey := meshcoreDedupKey(channelHash, dec.TimestampUnix, dec.Text)
+	if b.isDuplicateInbound(dedupKey) {
+		return
+	}
 
-		sender, body := splitSenderText(dec.Text)
+	sender, body := splitSenderText(dec.Text)
+	session := b.meshtasticSessionRef()
+	relayedIdx := map[uint32]bool{}
+	for _, m := range b.byName {
+		if !m.meshcoreEnabled || m.channelHash != channelHash {
+			continue
+		}
+		tag := formatSenderName(sender, originMeshcore, m.senderFormat)
 		if m.discordEnabled {
-			b.postToWebhook(m, sender, formatSenderName(sender, originMeshcore, m.senderFormat), body)
+			b.postToWebhook(m, sender, tag, body)
 		}
 		if m.meshtasticEnabled {
-			b.sendMeshtastic(m, formatSenderName(sender, originMeshcore, m.senderFormat), body)
+			skip := false
+			if session != nil {
+				if idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName); ok {
+					skip = relayedIdx[idx]
+					relayedIdx[idx] = true
+				}
+			}
+			if !skip {
+				b.sendMeshtastic(m, tag, body)
+			}
 		}
-		return // channel hashes/secrets are effectively unique; stop after first match
 	}
 }
 
 // handleMeshtasticMessage is called for every TEXT_MESSAGE_APP packet the
 // Meshtastic device hears. Unlike MeshCore, sender identity is
 // protocol-native (msg.FromName, resolved via session's node DB) — never
-// text-parsed. On a match, reposts to Discord (if the bridge has one) and,
-// if the bridge also has MeshCore enabled, relays it there too.
+// text-parsed. As with handleMeshcorePacket, multiple bridges may share the
+// same Meshtastic channel (relaying it into different Discord guilds), so
+// the message is reposted to every matching bridge's Discord webhook and
+// relayed to every matching bridge's MeshCore channel (if enabled and not
+// read-only) — each distinct MeshCore channel is only sent to once.
 func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshtastic.TextMessage) {
+	var matches []*mapping
 	for _, m := range b.byName {
 		if !m.meshtasticEnabled {
 			continue
@@ -64,28 +97,35 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 			logf("bridge %q: meshtastic channel %q is not configured on the attached device (dropping inbound message)", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
 			continue
 		}
-		if idx != msg.ChannelIndex {
-			continue
+		if idx == msg.ChannelIndex {
+			matches = append(matches, m)
 		}
-
-		echoKey := meshtasticEchoKey(msg.ChannelIndex, msg.Text)
-		if b.consumeSelfEcho(echoKey) {
-			return
-		}
-		dedupKey := meshtasticDedupKey(msg.ChannelIndex, msg.PacketID, msg.Text)
-		if b.isDuplicateInbound(dedupKey) {
-			return
-		}
-
-		if m.discordEnabled {
-			b.postToWebhook(m, msg.FromName, formatSenderName(msg.FromName, originMeshtastic, m.senderFormat), msg.Text)
-		}
-		if m.meshcoreEnabled {
-			b.sendMeshcore(m, formatSenderName(msg.FromName, originMeshtastic, m.senderFormat), msg.Text)
-		}
-		return // one bridge per (name, channel); stop after first match
 	}
-	logf("meshtastic: no bridge matches channel index %d for message from %s (check meshtastic.channel_name against the attached device's actual channel slots)", msg.ChannelIndex, msg.FromName)
+	if len(matches) == 0 {
+		logf("meshtastic: no bridge matches channel index %d for message from %s (check meshtastic.channel_name against the attached device's actual channel slots)", msg.ChannelIndex, msg.FromName)
+		return
+	}
+
+	echoKey := meshtasticEchoKey(msg.ChannelIndex, msg.Text)
+	if b.consumeSelfEcho(echoKey) {
+		return
+	}
+	dedupKey := meshtasticDedupKey(msg.ChannelIndex, msg.PacketID, msg.Text)
+	if b.isDuplicateInbound(dedupKey) {
+		return
+	}
+
+	relayedHash := map[byte]bool{}
+	for _, m := range matches {
+		tag := formatSenderName(msg.FromName, originMeshtastic, m.senderFormat)
+		if m.discordEnabled {
+			b.postToWebhook(m, msg.FromName, tag, msg.Text)
+		}
+		if m.meshcoreEnabled && !relayedHash[m.channelHash] {
+			relayedHash[m.channelHash] = true
+			b.sendMeshcore(m, tag, msg.Text)
+		}
+	}
 }
 
 // postToWebhook reposts body to m's Discord webhook under displaySender

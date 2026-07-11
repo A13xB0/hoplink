@@ -9,7 +9,13 @@
 # gateway connection needed at all (and the whole `discord:` block below and
 # `discord.bot_token` can then be omitted). Whenever a bridge has both
 # MeshCore and Meshtastic enabled, messages relay directly between them (not
-# just via Discord) — see sender_format below.
+# just via Discord) — see sender_format below. Two (or more) bridges that
+# reference the SAME MeshCore channel (matching hashtag/secret) and/or the
+# SAME Meshtastic channel_name are treated as siblings: a message landing on
+# any one of them relays directly to every sibling's Discord channel too —
+# e.g. bridging one MeshCore channel into two different Discord guilds. Any
+# side (meshcore/meshtastic/discord) can be marked read_only /
+# discord_read_only to receive only, never transmit — see bridges below.
 
 sender_format: none   # none | short | full — how a relayed message's origin
                        # surface is shown in the sender name on every OTHER
@@ -89,6 +95,9 @@ bridges:
                               # useful while you're still setting one up.
     discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID"
     discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL"
+    # discord_read_only: true # optional; this channel then only ever
+                              # receives posts — messages typed there are
+                              # never relayed out to the mesh or a sibling
     guild_id: ""              # optional; if set, messages from any other guild are ignored (sanity check, not required for routing)
     # max_message_bytes: 480  # optional per-bridge override of limits.max_message_bytes
     # sender_format: short    # optional per-bridge override of the top-level sender_format
@@ -97,9 +106,28 @@ bridges:
       hashtag: "#general"
       # flood_scope: "myregion"  # optional per-bridge override of the
                                   # top-level meshcore.flood_scope above
+      # read_only: true          # optional; this side then only ever
+                                  # receives from MeshCore, never transmits
     # meshtastic:             # uncomment to ALSO relay this same Discord channel to a Meshtastic
     #   enabled: true         # channel — and, since both would then be enabled on this bridge,
     #   channel_name: "LongFast"  # MeshCore <-> Meshtastic messages relay directly too
+    #   read_only: true       # optional; this side then only ever receives from Meshtastic, never transmits
+
+  # Two bridges sharing the same MeshCore channel but posting to different
+  # Discord servers: a message from either Discord side (or from the mesh)
+  # relays to BOTH Discord channels, in addition to the MeshCore channel.
+  # - name: general-guild-a
+  #   discord_channel_id: "..."
+  #   discord_webhook_url: "..."
+  #   meshcore:
+  #     enabled: true
+  #     hashtag: "#general"
+  # - name: general-guild-b
+  #   discord_channel_id: "..."     # a channel in a DIFFERENT Discord server
+  #   discord_webhook_url: "..."
+  #   meshcore:
+  #     enabled: true
+  #     hashtag: "#general"         # same channel as general-guild-a above
 
   # A MeshCore private channel: paste an explicit 32-hex-char (16-byte)
   # secret, e.g. one you generated in a MeshCore app's "create private

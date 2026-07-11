@@ -23,10 +23,11 @@ const meshcoreMaxChunkBytes = 150
 const meshtasticMaxChunkBytes = 200
 
 // handleDiscordMessage is the discord.Bot MessageHandler: it maps the
-// message's channel to a bridge (if any), enforces the guild check and
-// byte-size limit, formats "<Name>: <content>", and sends it to whichever
-// mesh backend(s) that bridge has enabled, each chunked to its own
-// protocol's budget.
+// message's channel to a bridge (if any), enforces the guild check, the
+// read-only check, and the byte-size limit, formats "<Name>: <content>",
+// and sends it to whichever mesh backend(s) that bridge has enabled (each
+// chunked to its own protocol's budget) as well as to any sibling bridge's
+// Discord channel sharing the same MeshCore/Meshtastic channel.
 func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	m, ok := b.byChan[msg.ChannelID]
 	if !ok {
@@ -41,6 +42,9 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	if m.cfg.GuildID != "" && msg.GuildID != "" && m.cfg.GuildID != msg.GuildID {
 		logf("bridge %q: ignoring message from guild %q (configured for guild %q)", m.cfg.Name, msg.GuildID, m.cfg.GuildID)
 		return
+	}
+	if m.cfg.DiscordReadOnly {
+		return // this bridge's Discord side only ever receives; never relays out
 	}
 
 	senderName := formatSenderName(msg.AuthorName, originDiscord, m.senderFormat)
@@ -57,9 +61,38 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	if m.meshtasticEnabled {
 		b.sendMeshtastic(m, senderName, msg.Content)
 	}
+	b.relayDiscordToSiblings(m, msg.AuthorName, msg.Content)
+}
+
+// relayDiscordToSiblings directly reposts a Discord message to every OTHER
+// bridge's Discord webhook that shares m's MeshCore channel (same secret)
+// and/or Meshtastic channel (same channel_name) — e.g. two bridges relaying
+// the same MeshCore hashtag channel into two different Discord guilds. This
+// is a same-process software relay: it doesn't depend on the message
+// actually being heard back over RF (which may never happen — no repeater
+// in range, route: direct, etc.), so it's immediate and reliable, and it
+// never triggers an additional mesh-side transmission beyond what m's own
+// enabled backends already send above.
+func (b *Bridge) relayDiscordToSiblings(m *mapping, rawSender, content string) {
+	posted := map[*mapping]bool{}
+	for _, o := range b.byName {
+		if o == m || !o.discordEnabled || posted[o] {
+			continue
+		}
+		sharesMeshcore := m.meshcoreEnabled && o.meshcoreEnabled && o.channelHash == m.channelHash
+		sharesMeshtastic := m.meshtasticEnabled && o.meshtasticEnabled &&
+			strings.EqualFold(o.cfg.Meshtastic.ChannelName, m.cfg.Meshtastic.ChannelName)
+		if sharesMeshcore || sharesMeshtastic {
+			posted[o] = true
+			b.postToWebhook(o, rawSender, formatSenderName(rawSender, originDiscord, o.senderFormat), content)
+		}
+	}
 }
 
 func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
+	if m.cfg.MeshCore.ReadOnly {
+		return // this bridge's MeshCore side only ever receives; never transmits
+	}
 	session := b.meshcoreSessionRef()
 	if session == nil {
 		logf("bridge %q: meshcore not currently connected; dropping outgoing message", m.cfg.Name)
@@ -77,6 +110,9 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 }
 
 func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
+	if m.cfg.Meshtastic.ReadOnly {
+		return // this bridge's Meshtastic side only ever receives; never transmits
+	}
 	session := b.meshtasticSessionRef()
 	if session == nil {
 		logf("bridge %q: meshtastic not currently connected; dropping outgoing message", m.cfg.Name)
