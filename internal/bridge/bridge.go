@@ -41,9 +41,10 @@ type mapping struct {
 	discordEnabled bool
 
 	meshcoreEnabled bool
-	secret          []byte // MeshCore channel secret; valid iff meshcoreEnabled
-	channelHash     byte   // valid iff meshcoreEnabled
-	scopeKey        []byte // resolved from cfg.MeshCore.FloodScope or the global default; nil for unscoped ROUTE_TYPE_FLOOD; valid iff meshcoreEnabled
+	secret          []byte   // MeshCore channel secret; valid iff meshcoreEnabled
+	channelHash     byte     // valid iff meshcoreEnabled
+	scopeKey        []byte   // resolved from cfg.MeshCore.FloodScope or the global default; nil for unscoped ROUTE_TYPE_FLOOD; valid iff meshcoreEnabled
+	rxScopes        []string // resolved from cfg.MeshCore.RxScopes or the global default; empty = accept every scope on the raw-log path; valid iff meshcoreEnabled
 
 	meshtasticEnabled bool // channel resolution happens live against whichever meshtastic.Session is attached (see outbound.go/inbound.go)
 }
@@ -165,6 +166,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 			m.secret = secret
 			m.channelHash = chHash
 			m.scopeKey = bc.ResolvedScopeKey(cfg.Meshcore.FloodScope)
+			m.rxScopes = bc.ResolvedRxScopes(cfg.Meshcore.RxScopes)
 		}
 		b.byName = append(b.byName, m)
 		if discordEnabled {

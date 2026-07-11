@@ -23,6 +23,7 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 
 	var dec meshcore.GroupTextDecrypt
 	var channelHash byte
+	var rxScopes []string
 	found := false
 	for _, m := range b.byName {
 		if !m.meshcoreEnabled {
@@ -32,7 +33,7 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		if !ok {
 			continue // wrong channel secret; try the next mapping
 		}
-		dec, channelHash, found = d, m.channelHash, true
+		dec, channelHash, rxScopes, found = d, m.channelHash, m.rxScopes, true
 		break
 	}
 	if !found {
@@ -42,6 +43,22 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		}
 		b.debugf("meshcore: GRP_TXT packet (wire channel_hash %#x, %d-byte payload) didn't decrypt against any configured meshcore.hashtag/secret_hex/public — check it matches the sender's actual channel", wireHash, len(lrx.Packet.Payload))
 		return
+	}
+
+	// rx_scopes filtering only applies here, on the raw-log path: this is
+	// the only place a packet's transport code (and thus its flood scope)
+	// is visible at all — the sync path's PACKET_CHANNEL_MSG_RECV carries no
+	// route/transport-code metadata to filter on.
+	if len(rxScopes) > 0 {
+		matches, err := lrx.Packet.MatchesAnyScope(rxScopes)
+		if err != nil {
+			b.debugf("meshcore: error checking rx_scopes for channel_hash %#x: %v", channelHash, err)
+			return
+		}
+		if !matches {
+			b.debugf("meshcore: dropping GRP_TXT packet on channel_hash %#x — its scope doesn't match configured rx_scopes %v", channelHash, rxScopes)
+			return
+		}
 	}
 
 	b.deliverMeshcoreChannelText("raw log", channelHash, dec.TimestampUnix, dec.Text)

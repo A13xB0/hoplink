@@ -190,6 +190,7 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `route`           | `flood`    | `flood` \| `direct`                                                                   |
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
+| `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "Reliable receiving" below); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
 
 ### `meshtastic:` (top-level)
 
@@ -244,6 +245,7 @@ each other and want to reduce RF interference between them.
 | `meshcore.secret_hex` | An explicit 32-hex-char (16-byte) private channel secret                             |
 | `meshcore.public`     | Use MeshCore's well-known default public channel                                     |
 | `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
+| `meshcore.rx_scopes`  | Optional per-bridge override of the top-level `meshcore.rx_scopes`; empty/unset = use the global default |
 | `meshcore.read_only`  | Optional, defaults to `false`. If `true`, this side only ever receives from MeshCore, never transmits |
 | `meshtastic.enabled`  | Turn on the Meshtastic side of this bridge                                           |
 | `meshtastic.channel_name` | Name of a channel slot **already configured on the attached device**             |

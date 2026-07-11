@@ -156,3 +156,56 @@ func TestParseLogRxData(t *testing.T) {
 		t.Errorf("PayloadType = %v, want GrpTxt", got.Packet.PayloadType)
 	}
 }
+
+func TestPacket_MatchesAnyScope_UnscopedNeverMatches(t *testing.T) {
+	p := Packet{Route: RouteFlood, PayloadType: PayloadTypeGrpTxt, Payload: []byte{1, 2, 3}}
+	got, err := p.MatchesAnyScope([]string{"myregion"})
+	if err != nil {
+		t.Fatalf("MatchesAnyScope: %v", err)
+	}
+	if got {
+		t.Error("an unscoped packet must never match a non-empty scope list")
+	}
+}
+
+func TestPacket_MatchesAnyScope_MatchesConfiguredScope(t *testing.T) {
+	payload := []byte{1, 2, 3}
+	code, err := CalcTransportCode(FloodScopeKey("myregion"), PayloadTypeGrpTxt, payload)
+	if err != nil {
+		t.Fatalf("CalcTransportCode: %v", err)
+	}
+	p := Packet{
+		Route:          RouteTransportFlood,
+		PayloadType:    PayloadTypeGrpTxt,
+		Payload:        payload,
+		TransportCodes: EncodeTransportCodes(code, 0),
+	}
+	got, err := p.MatchesAnyScope([]string{"otherregion", "myregion"})
+	if err != nil {
+		t.Fatalf("MatchesAnyScope: %v", err)
+	}
+	if !got {
+		t.Error("expected a match against the packet's actual scope")
+	}
+}
+
+func TestPacket_MatchesAnyScope_RejectsWrongScope(t *testing.T) {
+	payload := []byte{1, 2, 3}
+	code, err := CalcTransportCode(FloodScopeKey("myregion"), PayloadTypeGrpTxt, payload)
+	if err != nil {
+		t.Fatalf("CalcTransportCode: %v", err)
+	}
+	p := Packet{
+		Route:          RouteTransportFlood,
+		PayloadType:    PayloadTypeGrpTxt,
+		Payload:        payload,
+		TransportCodes: EncodeTransportCodes(code, 0),
+	}
+	got, err := p.MatchesAnyScope([]string{"differentregion"})
+	if err != nil {
+		t.Fatalf("MatchesAnyScope: %v", err)
+	}
+	if got {
+		t.Error("expected no match against an unconfigured scope")
+	}
+}

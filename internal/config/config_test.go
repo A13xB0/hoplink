@@ -758,6 +758,92 @@ func TestLoad_ReadOnlyFieldsDefaultToFalse(t *testing.T) {
 	}
 }
 
+func TestBridge_ResolvedRxScopes_UsesGlobalWhenBridgeUnset(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
+	got := b.ResolvedRxScopes([]string{"global1", "global2"})
+	want := []string{"global1", "global2"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("ResolvedRxScopes() = %v, want %v", got, want)
+	}
+}
+
+func TestBridge_ResolvedRxScopes_BridgeOverrideWinsOverGlobal(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true, RxScopes: []string{"bridgeonly"}}}
+	got := b.ResolvedRxScopes([]string{"global1"})
+	if len(got) != 1 || got[0] != "bridgeonly" {
+		t.Errorf("ResolvedRxScopes() = %v, want [bridgeonly]", got)
+	}
+}
+
+func TestBridge_ResolvedRxScopes_EmptyWhenBothUnset(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
+	if got := b.ResolvedRxScopes(nil); len(got) != 0 {
+		t.Errorf("ResolvedRxScopes() = %v, want empty (accept every scope)", got)
+	}
+}
+
+func TestLoad_RxScopesIsConfigurable(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+  rx_scopes: ["region1", "region2"]
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"region1", "region2"}
+	if len(got.Meshcore.RxScopes) != 2 || got.Meshcore.RxScopes[0] != want[0] || got.Meshcore.RxScopes[1] != want[1] {
+		t.Errorf("Meshcore.RxScopes = %v, want %v", got.Meshcore.RxScopes, want)
+	}
+}
+
+func TestLoad_RxScopesDefaultsToEmpty(t *testing.T) {
+	got, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Meshcore.RxScopes) != 0 {
+		t.Errorf("Meshcore.RxScopes = %v, want empty by default", got.Meshcore.RxScopes)
+	}
+}
+
+func TestLoad_BridgeRxScopesOverridesGlobal(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+  rx_scopes: ["globalregion"]
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+      rx_scopes: ["bridgeregion"]
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := got.Bridges[0]
+	resolved := b.ResolvedRxScopes(got.Meshcore.RxScopes)
+	if len(resolved) != 1 || resolved[0] != "bridgeregion" {
+		t.Errorf("ResolvedRxScopes() = %v, want [bridgeregion]", resolved)
+	}
+}
+
 func TestBridge_ResolvedScopeKey_UsesGlobalWhenBridgeUnset(t *testing.T) {
 	b := Bridge{MeshCore: BridgeMeshCore{Enabled: true}}
 	got := b.ResolvedScopeKey("globalregion")

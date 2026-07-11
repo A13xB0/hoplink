@@ -54,6 +54,15 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # our messages would otherwise never make it past the
                       # first hop. Must match the scope name your repeaters
                       # are configured with (CMD_SET_DEFAULT_FLOOD_SCOPE).
+  rx_scopes: []       # optional allowlist of scope names to ACCEPT on
+                      # receive (e.g. ["region1", "region2"]) — a received
+                      # packet must be flooded within one of these scopes or
+                      # it's dropped; leave empty (the default) to accept
+                      # every scope, scoped or not. This is the DEFAULT for
+                      # every bridge; override per-bridge with
+                      # meshcore.rx_scopes below. Only filters the raw-log
+                      # inbound path (see README) — has no effect on the
+                      # device-side sync path, which carries no scope info.
 
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
@@ -114,6 +123,8 @@ bridges:
       hashtag: "#general"
       # flood_scope: "myregion"  # optional per-bridge override of the
                                   # top-level meshcore.flood_scope above
+      # rx_scopes: ["myregion"]  # optional per-bridge override of the
+                                  # top-level meshcore.rx_scopes above
       # read_only: true          # optional; this side then only ever
                                   # receives from MeshCore, never transmits
     # meshtastic:             # uncomment to ALSO relay this same Discord channel to a Meshtastic

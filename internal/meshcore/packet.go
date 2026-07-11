@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"encoding/binary"
 	"fmt"
 )
 
@@ -17,6 +18,32 @@ type Packet struct {
 	Path           []byte // hopCount * hashSize bytes
 	HashSize       int    // bytes per hop hash (1-4); meaningful only if len(Path) > 0
 	Payload        []byte
+}
+
+// MatchesAnyScope reports whether p's transport code matches one of
+// scopeNames' derived keys (see CalcTransportCode) — i.e. whether p was
+// flooded within one of these named scopes/regions. A packet with no
+// transport codes at all (unscoped ROUTE_TYPE_FLOOD/_DIRECT) never matches
+// a non-empty scope list: the whole point of rx_scopes is to reject
+// unscoped traffic once configured. The transport code is an HMAC over p's
+// own payload (see CalcTransportCode), so this can only be checked against
+// a specific received packet, never precomputed per scope name ahead of
+// time.
+func (p Packet) MatchesAnyScope(scopeNames []string) (bool, error) {
+	if !p.Route.HasTransportCodes() || len(p.TransportCodes) < 2 {
+		return false, nil
+	}
+	got := binary.LittleEndian.Uint16(p.TransportCodes[0:2])
+	for _, name := range scopeNames {
+		code, err := CalcTransportCode(FloodScopeKey(name), p.PayloadType, p.Payload)
+		if err != nil {
+			return false, err
+		}
+		if code == got {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // BuildPacket serialises p to its on-wire bytes (mirrors firmware

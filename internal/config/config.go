@@ -63,6 +63,14 @@ type Meshcore struct {
 	Route         string `yaml:"route"`           // "flood" or "direct"
 	PathHashBytes int    `yaml:"path_hash_bytes"` // 2 or 3 — bytes/hop for path tracking on our outgoing packets; 1-byte hashes are not allowed
 	FloodScope    string `yaml:"flood_scope"`     // optional named flood scope/region; empty = unscoped ROUTE_TYPE_FLOOD
+	// RxScopes optionally restricts which flood-scoped raw-log packets are
+	// accepted for processing: a packet must carry a transport code matching
+	// one of these scope names, or it's dropped. Empty (the default) accepts
+	// every scope, scoped or not — today's behavior. Only applies to the
+	// raw-log inbound path; the sync path's PACKET_CHANNEL_MSG_RECV carries
+	// no route/transport-code metadata to filter on. Global default;
+	// override per-bridge via bridges[].meshcore.rx_scopes.
+	RxScopes []string `yaml:"rx_scopes"`
 }
 
 // Addr returns "host:port" for net.Dial.
@@ -193,6 +201,10 @@ type BridgeMeshCore struct {
 	// MeshCore — messages from Discord or a linked Meshtastic channel are
 	// never transmitted out over this bridge's MeshCore side.
 	ReadOnly bool `yaml:"read_only"`
+	// RxScopes optionally overrides the top-level meshcore.rx_scopes for
+	// this bridge only; empty means use the global default (see
+	// Bridge.ResolvedRxScopes).
+	RxScopes []string `yaml:"rx_scopes"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -302,6 +314,17 @@ func (b Bridge) ResolvedScopeKey(globalScope string) []byte {
 		scope = globalScope
 	}
 	return scopeKeyForName(scope)
+}
+
+// ResolvedRxScopes returns this bridge's effective rx_scopes allowlist: its
+// own meshcore.rx_scopes override if non-empty, else globalScopes (the
+// top-level meshcore.rx_scopes). An empty result means accept every scope
+// (no filtering) — the default.
+func (b Bridge) ResolvedRxScopes(globalScopes []string) []string {
+	if len(b.MeshCore.RxScopes) > 0 {
+		return b.MeshCore.RxScopes
+	}
+	return globalScopes
 }
 
 // DiscordEnabled reports whether any enabled bridge has a Discord side
