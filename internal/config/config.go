@@ -71,6 +71,14 @@ type Meshcore struct {
 	// no route/transport-code metadata to filter on. Global default;
 	// override per-bridge via bridges[].meshcore.rx_scopes.
 	RxScopes []string `yaml:"rx_scopes"`
+	// RetryOnNoRepeat, when true, has hoplink retransmit an outgoing MeshCore
+	// message once if it never hears its own message repeated back by the
+	// mesh (no self-echo observed) within a short window after sending — a
+	// signal the original transmission likely wasn't picked up by any
+	// repeater. Disabled by default: it's a heuristic (no repeater in range
+	// is also normal on a small/direct-route mesh) and doubles airtime for
+	// every message it triggers on.
+	RetryOnNoRepeat bool `yaml:"retry_on_no_repeat"`
 }
 
 // Addr returns "host:port" for net.Dial.

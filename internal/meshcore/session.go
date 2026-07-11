@@ -422,22 +422,23 @@ type ChannelMessage struct {
 // RegisterChannel ensures secret16 is registered on the device under name,
 // so the device will decrypt and queue GRP_TXT messages on that channel for
 // retrieval via ChannelMessages/CMD_SYNC_NEXT_MESSAGE. Reuses an existing
-// slot already holding this exact secret (idempotent across reconnects);
-// otherwise claims the first empty slot (1-MaxChannelSlots; index 0 is
-// conventionally reserved for the public channel, see MaxChannelSlots).
-// Never touches a slot holding a *different* secret — this must not clobber
-// another tool's channel registration on a shared device. Returns an error
-// if every slot is occupied by an unrelated channel.
-func (s *Session) RegisterChannel(secret16 []byte, name string) (byte, error) {
+// slot already holding this exact secret (idempotent across reconnects) —
+// alreadyInstalled reports which happened, so callers can log it — otherwise
+// claims the first empty slot (1-MaxChannelSlots; index 0 is conventionally
+// reserved for the public channel, see MaxChannelSlots). Never touches a
+// slot holding a *different* secret — this must not clobber another tool's
+// channel registration on a shared device. Returns an error if every slot
+// is occupied by an unrelated channel.
+func (s *Session) RegisterChannel(secret16 []byte, name string) (slot byte, alreadyInstalled bool, err error) {
 	if len(secret16) != 16 {
-		return 0, fmt.Errorf("meshcore: channel secret must be exactly 16 bytes, got %d", len(secret16))
+		return 0, false, fmt.Errorf("meshcore: channel secret must be exactly 16 bytes, got %d", len(secret16))
 	}
 
 	emptySlot := -1
 	for idx := byte(1); idx <= MaxChannelSlots; idx++ {
 		resp, err := s.request(BuildGetChannelFrame(idx), []byte{FrameChannelInfo, FrameErr}, DefaultCommandTimeout)
 		if err != nil {
-			return 0, fmt.Errorf("meshcore: getting channel slot %d: %w", idx, err)
+			return 0, false, fmt.Errorf("meshcore: getting channel slot %d: %w", idx, err)
 		}
 		if len(resp) > 0 && resp[0] == FrameErr {
 			continue
@@ -447,28 +448,67 @@ func (s *Session) RegisterChannel(secret16 []byte, name string) (byte, error) {
 			continue
 		}
 		if bytes.Equal(info.Secret, secret16) {
-			return idx, nil // already registered from a prior run
+			return idx, true, nil // already registered from a prior run
 		}
 		if emptySlot == -1 && info.IsEmptyChannelSlot() {
 			emptySlot = int(idx)
 		}
 	}
 	if emptySlot == -1 {
-		return 0, fmt.Errorf("meshcore: no free channel slot for %q (all %d slots in use)", name, MaxChannelSlots)
+		return 0, false, fmt.Errorf("meshcore: no free channel slot for %q (all %d slots in use)", name, MaxChannelSlots)
 	}
 
 	frame, err := BuildSetChannelFrame(byte(emptySlot), name, secret16)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	resp, err := s.request(frame, []byte{FrameOK, FrameErr}, DefaultCommandTimeout)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if err := checkOK(resp); err != nil {
-		return 0, fmt.Errorf("meshcore: registering channel %q at slot %d: %w", name, emptySlot, err)
+		return 0, false, fmt.Errorf("meshcore: registering channel %q at slot %d: %w", name, emptySlot, err)
 	}
-	return byte(emptySlot), nil
+	return byte(emptySlot), false, nil
+}
+
+// RegisterPublicChannel ensures MeshCore's well-known public channel
+// (PublicChannelKey) is registered at the device's conventional public slot
+// (PublicChannelSlot, index 0) for device-side sync. Unlike RegisterChannel,
+// this never searches other slots or claims one of the 7 private slots:
+// every other MeshCore client (and the companion apps' own UI) expects the
+// public channel at index 0 specifically, so that's always used. If slot 0
+// already holds a different, non-empty channel, this returns an error
+// rather than overwriting it — that would silently break whatever else is
+// configured there.
+func (s *Session) RegisterPublicChannel() (alreadyInstalled bool, err error) {
+	resp, err := s.request(BuildGetChannelFrame(PublicChannelSlot), []byte{FrameChannelInfo, FrameErr}, DefaultCommandTimeout)
+	if err != nil {
+		return false, fmt.Errorf("meshcore: getting channel slot %d: %w", PublicChannelSlot, err)
+	}
+	if len(resp) > 0 && resp[0] != FrameErr {
+		if info, ok := ParseChannelInfo(resp); ok {
+			if bytes.Equal(info.Secret, PublicChannelKey) {
+				return true, nil // already registered, from this or a prior run
+			}
+			if !info.IsEmptyChannelSlot() {
+				return false, fmt.Errorf("meshcore: device slot %d already holds a different channel (%q) — refusing to overwrite it with the public channel", PublicChannelSlot, info.Name)
+			}
+		}
+	}
+
+	frame, err := BuildSetChannelFrame(PublicChannelSlot, "public", PublicChannelKey)
+	if err != nil {
+		return false, err
+	}
+	resp, err = s.request(frame, []byte{FrameOK, FrameErr}, DefaultCommandTimeout)
+	if err != nil {
+		return false, err
+	}
+	if err := checkOK(resp); err != nil {
+		return false, fmt.Errorf("meshcore: registering public channel at slot %d: %w", PublicChannelSlot, err)
+	}
+	return false, nil
 }
 
 // syncLoop drains queued channel messages via CMD_SYNC_NEXT_MESSAGE,

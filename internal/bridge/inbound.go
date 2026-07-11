@@ -269,3 +269,18 @@ func (b *Bridge) markOutboundSent(key string) {
 	defer b.mu.Unlock()
 	b.recentOutbound[key] = time.Now()
 }
+
+// echoUnheard reports whether key is still pending in recentOutbound — i.e.
+// consumeSelfEcho hasn't observed a repeat of it yet — and removes it either
+// way, so a genuine echo arriving after this check fires isn't mistaken for
+// an echo of the retransmit that this triggers. Used only by
+// meshcore.retry_on_no_repeat (see transmitMeshcore); repeatRetryWait is kept
+// below selfEchoTTL so the periodic sweep can never race this check by
+// purging the key first.
+func (b *Bridge) echoUnheard(key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, pending := b.recentOutbound[key]
+	delete(b.recentOutbound, key)
+	return pending
+}

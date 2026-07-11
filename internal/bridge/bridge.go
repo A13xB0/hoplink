@@ -30,6 +30,17 @@ const inboundDedupTTL = 60 * time.Second
 // the mesh floods it back to us.
 const selfEchoTTL = 10 * time.Second
 
+// repeatRetryWait is how long meshcore.retry_on_no_repeat waits after
+// sending before deciding no repeater picked the message up. Kept below
+// selfEchoTTL so the periodic sweep (see sweep) can never purge the pending
+// echo key out from under this check. A var (not const) so tests can shrink
+// it rather than sleeping for the real production duration.
+var repeatRetryWait = 8 * time.Second
+
+// maxRepeatRetries caps how many times a single message is retransmitted for
+// never being heard repeated — one retry, not an unbounded loop.
+const maxRepeatRetries = 1
+
 // mapping is one bridge entry: whichever of MeshCore/Meshtastic/Discord it
 // has enabled (at least two of the three).
 type mapping struct {
@@ -63,12 +74,13 @@ type notifier interface {
 // RunMeshtastic each own one backend's connected lifetime independently, so
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
-	notify   notifier
-	route    meshcore.RfRouteType
-	hashSize int // path hash bytes/hop for our outgoing MeshCore packets (1-3)
-	debug    bool
-	byName   []*mapping
-	byChan   map[string]*mapping // Discord channel ID -> mapping
+	notify          notifier
+	route           meshcore.RfRouteType
+	hashSize        int // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	debug           bool
+	retryOnNoRepeat bool // meshcore.retry_on_no_repeat — see repeatRetryWait/maxRepeatRetries
+	byName          []*mapping
+	byChan          map[string]*mapping // Discord channel ID -> mapping
 
 	// hashBySlot maps a device channel slot index (registered via
 	// meshcore.Session.RegisterChannel) back to our own channelHash, so
@@ -127,14 +139,15 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	}
 
 	b := &Bridge{
-		route:          route,
-		hashSize:       cfg.Meshcore.PathHashBytes,
-		debug:          cfg.Debug,
-		txGuardEnabled: cfg.Coexistence.Enabled(),
-		txGuardGap:     cfg.Coexistence.GapDuration(),
-		byChan:         make(map[string]*mapping),
-		recentInbound:  make(map[string]time.Time),
-		recentOutbound: make(map[string]time.Time),
+		route:           route,
+		hashSize:        cfg.Meshcore.PathHashBytes,
+		debug:           cfg.Debug,
+		retryOnNoRepeat: cfg.Meshcore.RetryOnNoRepeat,
+		txGuardEnabled:  cfg.Coexistence.Enabled(),
+		txGuardGap:      cfg.Coexistence.GapDuration(),
+		byChan:          make(map[string]*mapping),
+		recentInbound:   make(map[string]time.Time),
+		recentOutbound:  make(map[string]time.Time),
 	}
 
 	for _, bc := range cfg.Bridges {
@@ -264,14 +277,38 @@ func (b *Bridge) registerMeshcoreChannels(session *meshcore.Session) {
 		}
 		registered[m.channelHash] = true
 
+		// The public channel works differently from hashtag/private
+		// channels: every MeshCore client expects it at the device's fixed
+		// public slot (index 0), never searched for or claimed like the 7
+		// private slots.
+		if m.cfg.MeshCore.Public {
+			alreadyInstalled, err := session.RegisterPublicChannel()
+			if err != nil {
+				logf("bridge %q: could not register the public meshcore channel for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, err)
+				continue
+			}
+			if alreadyInstalled {
+				logf("bridge %q: public meshcore channel (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
+			} else {
+				logf("bridge %q: public meshcore channel (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
+			}
+			b.hashBySlot[meshcore.PublicChannelSlot] = m.channelHash
+			continue
+		}
+
 		name := m.cfg.MeshCore.Hashtag
 		if name == "" {
 			name = m.cfg.Name
 		}
-		slot, err := session.RegisterChannel(m.secret, name)
+		slot, alreadyInstalled, err := session.RegisterChannel(m.secret, name)
 		if err != nil {
-			logf("bridge %q: could not register meshcore channel for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, err)
+			logf("bridge %q: could not register meshcore channel %q (channel_hash %#x) for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, name, m.channelHash, err)
 			continue
+		}
+		if alreadyInstalled {
+			logf("bridge %q: meshcore channel %q (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
+		} else {
+			logf("bridge %q: meshcore channel %q (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
 		}
 		b.hashBySlot[slot] = m.channelHash
 	}

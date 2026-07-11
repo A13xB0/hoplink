@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hectospark/hoplink/internal/config"
 	"github.com/hectospark/hoplink/internal/meshcore"
 )
 
@@ -196,6 +197,7 @@ func TestBridge_DualPath_SelfEchoConsumedBySyncStillDedupesRawLog(t *testing.T) 
 func TestBridge_RegisterMeshcoreChannels_PopulatesHashBySlot(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	buf := captureLog(t)
 
 	addr, _ := startTinyFakeRadio(t, func(cmd byte, frame []byte) []byte {
 		switch cmd {
@@ -226,6 +228,114 @@ func TestBridge_RegisterMeshcoreChannels_PopulatesHashBySlot(t *testing.T) {
 	}
 	if hash != m.channelHash {
 		t.Errorf("hashBySlot[1] = %#x, want %#x", hash, m.channelHash)
+	}
+	if !strings.Contains(buf.String(), "installed on the device at slot 1") {
+		t.Errorf("expected a log line reporting the fresh install at slot 1, got: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), "already installed") {
+		t.Errorf("expected no 'already installed' wording for a freshly claimed slot, got: %s", buf.String())
+	}
+}
+
+func TestBridge_RegisterMeshcoreChannels_LogsAlreadyInstalledWhenSlotReused(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	buf := captureLog(t)
+
+	addr, _ := startTinyFakeRadio(t, func(cmd byte, frame []byte) []byte {
+		switch cmd {
+		case meshcore.CmdAppStart:
+			return selfInfoFrame("fake-radio")
+		case meshcore.CmdGetChannel:
+			resp := make([]byte, 2+32+16)
+			resp[0] = meshcore.FrameChannelInfo
+			idx := frame[1]
+			resp[1] = idx
+			if idx == 2 {
+				// Slot 2 already holds this exact channel from a prior run.
+				copy(resp[2:2+32], "general")
+				copy(resp[2+32:], m.secret)
+			}
+			return resp
+		case meshcore.CmdSetChannel:
+			t.Error("expected no CMD_SET_CHANNEL when the secret is already installed")
+			return []byte{meshcore.FrameOK}
+		}
+		return nil
+	})
+	session, _, err := meshcore.Dial(addr, "hoplink-test")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	b.registerMeshcoreChannels(session)
+
+	hash, ok := b.hashBySlot[2]
+	if !ok {
+		t.Fatalf("expected slot 2 to be recognised, got hashBySlot=%v", b.hashBySlot)
+	}
+	if hash != m.channelHash {
+		t.Errorf("hashBySlot[2] = %#x, want %#x", hash, m.channelHash)
+	}
+	if !strings.Contains(buf.String(), "already installed on the device at slot 2") {
+		t.Errorf("expected a log line reporting the already-installed channel at slot 2, got: %s", buf.String())
+	}
+}
+
+func TestBridge_RegisterMeshcoreChannels_UsesFixedSlotZeroForPublicChannel(t *testing.T) {
+	bc := config.Bridge{
+		Name:              "public-lobby",
+		DiscordChannelID:  "chan-public",
+		DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+		MeshCore:          config.BridgeMeshCore{Enabled: true, Public: true},
+	}
+	secret, err := bc.Secret()
+	if err != nil {
+		t.Fatalf("Secret: %v", err)
+	}
+	chHash, err := meshcore.ChannelHash(secret)
+	if err != nil {
+		t.Fatalf("ChannelHash: %v", err)
+	}
+	m := &mapping{cfg: bc, secret: secret, channelHash: chHash, meshcoreEnabled: true}
+	b := newTestBridge(m)
+	buf := captureLog(t)
+
+	addr, _ := startTinyFakeRadio(t, func(cmd byte, frame []byte) []byte {
+		switch cmd {
+		case meshcore.CmdAppStart:
+			return selfInfoFrame("fake-radio")
+		case meshcore.CmdGetChannel:
+			resp := make([]byte, 2+32+16)
+			resp[0] = meshcore.FrameChannelInfo
+			resp[1] = frame[1] // empty at every slot, including 0
+			return resp
+		case meshcore.CmdSetChannel:
+			if frame[1] != meshcore.PublicChannelSlot {
+				t.Errorf("expected the public channel to be set at slot %d, got %d", meshcore.PublicChannelSlot, frame[1])
+			}
+			return []byte{meshcore.FrameOK}
+		}
+		return nil
+	})
+	session, _, err := meshcore.Dial(addr, "hoplink-test")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	b.registerMeshcoreChannels(session)
+
+	hash, ok := b.hashBySlot[meshcore.PublicChannelSlot]
+	if !ok {
+		t.Fatalf("expected slot %d to be registered, got hashBySlot=%v", meshcore.PublicChannelSlot, b.hashBySlot)
+	}
+	if hash != m.channelHash {
+		t.Errorf("hashBySlot[%d] = %#x, want %#x", meshcore.PublicChannelSlot, hash, m.channelHash)
+	}
+	if !strings.Contains(buf.String(), "public meshcore channel") || !strings.Contains(buf.String(), "installed on the device at slot 0") {
+		t.Errorf("expected a log line reporting the public channel install at slot 0, got: %s", buf.String())
 	}
 }
 

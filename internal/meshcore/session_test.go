@@ -591,12 +591,15 @@ func TestSession_RegisterChannel_ClaimsFirstEmptySlot(t *testing.T) {
 	s, _, _ := dialOverPipe(t, dev.handle)
 
 	secret := HashtagChannelSecret("#general")
-	idx, err := s.RegisterChannel(secret, "general")
+	idx, alreadyInstalled, err := s.RegisterChannel(secret, "general")
 	if err != nil {
 		t.Fatalf("RegisterChannel: %v", err)
 	}
 	if idx != 1 {
 		t.Errorf("idx = %d, want 1 (first empty slot)", idx)
+	}
+	if alreadyInstalled {
+		t.Error("alreadyInstalled = true, want false (freshly registered)")
 	}
 	if len(dev.setCalls) != 1 {
 		t.Fatalf("expected exactly 1 CMD_SET_CHANNEL, got %d", len(dev.setCalls))
@@ -613,12 +616,15 @@ func TestSession_RegisterChannel_ReusesExistingSlot(t *testing.T) {
 	}}
 	s, _, _ := dialOverPipe(t, dev.handle)
 
-	idx, err := s.RegisterChannel(secret, "general")
+	idx, alreadyInstalled, err := s.RegisterChannel(secret, "general")
 	if err != nil {
 		t.Fatalf("RegisterChannel: %v", err)
 	}
 	if idx != 3 {
 		t.Errorf("idx = %d, want 3 (existing slot, reused)", idx)
+	}
+	if !alreadyInstalled {
+		t.Error("alreadyInstalled = false, want true (reused an existing slot)")
 	}
 	if len(dev.setCalls) != 0 {
 		t.Errorf("expected no CMD_SET_CHANNEL when the secret is already registered, got %d", len(dev.setCalls))
@@ -633,7 +639,7 @@ func TestSession_RegisterChannel_DoesNotClobberDifferentSecretInSlot1(t *testing
 	s, _, _ := dialOverPipe(t, dev.handle)
 
 	secret := HashtagChannelSecret("#general")
-	idx, err := s.RegisterChannel(secret, "general")
+	idx, _, err := s.RegisterChannel(secret, "general")
 	if err != nil {
 		t.Fatalf("RegisterChannel: %v", err)
 	}
@@ -653,8 +659,62 @@ func TestSession_RegisterChannel_ErrorsWhenAllSlotsFull(t *testing.T) {
 	dev := &fakeChannelDevice{slots: slots}
 	s, _, _ := dialOverPipe(t, dev.handle)
 
-	if _, err := s.RegisterChannel(HashtagChannelSecret("#new"), "new"); err == nil {
+	if _, _, err := s.RegisterChannel(HashtagChannelSecret("#new"), "new"); err == nil {
 		t.Fatal("expected an error when all slots are occupied by unrelated channels")
+	}
+}
+
+func TestSession_RegisterPublicChannel_InstallsAtSlotZeroWhenEmpty(t *testing.T) {
+	dev := &fakeChannelDevice{}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	alreadyInstalled, err := s.RegisterPublicChannel()
+	if err != nil {
+		t.Fatalf("RegisterPublicChannel: %v", err)
+	}
+	if alreadyInstalled {
+		t.Error("alreadyInstalled = true, want false (freshly registered)")
+	}
+	if len(dev.setCalls) != 1 {
+		t.Fatalf("expected exactly 1 CMD_SET_CHANNEL, got %d", len(dev.setCalls))
+	}
+	if dev.setCalls[0].Index != PublicChannelSlot {
+		t.Errorf("SET_CHANNEL index = %d, want %d", dev.setCalls[0].Index, PublicChannelSlot)
+	}
+	if !bytes.Equal(dev.setCalls[0].Secret, PublicChannelKey) {
+		t.Errorf("SET_CHANNEL secret = %x, want the well-known public key %x", dev.setCalls[0].Secret, PublicChannelKey)
+	}
+}
+
+func TestSession_RegisterPublicChannel_ReusesExistingSlotZero(t *testing.T) {
+	dev := &fakeChannelDevice{slots: map[byte]ChannelInfo{
+		PublicChannelSlot: {Index: PublicChannelSlot, Name: "public", Secret: PublicChannelKey},
+	}}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	alreadyInstalled, err := s.RegisterPublicChannel()
+	if err != nil {
+		t.Fatalf("RegisterPublicChannel: %v", err)
+	}
+	if !alreadyInstalled {
+		t.Error("alreadyInstalled = false, want true (already at slot 0)")
+	}
+	if len(dev.setCalls) != 0 {
+		t.Errorf("expected no CMD_SET_CHANNEL when the public channel is already installed, got %d", len(dev.setCalls))
+	}
+}
+
+func TestSession_RegisterPublicChannel_ErrorsWhenSlotZeroHoldsSomethingElse(t *testing.T) {
+	dev := &fakeChannelDevice{slots: map[byte]ChannelInfo{
+		PublicChannelSlot: {Index: PublicChannelSlot, Name: "not-public", Secret: HashtagChannelSecret("#not-public")},
+	}}
+	s, _, _ := dialOverPipe(t, dev.handle)
+
+	if _, err := s.RegisterPublicChannel(); err == nil {
+		t.Fatal("expected an error rather than overwriting an unrelated channel at slot 0")
+	}
+	if len(dev.setCalls) != 0 {
+		t.Errorf("expected no CMD_SET_CHANNEL when refusing to overwrite slot 0, got %d", len(dev.setCalls))
 	}
 }
 

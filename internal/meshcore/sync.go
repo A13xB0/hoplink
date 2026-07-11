@@ -13,6 +13,11 @@ import (
 // collides with another tool's use of slot 0.
 const MaxChannelSlots = 7
 
+// PublicChannelSlot is the device slot index conventionally reserved for
+// MeshCore's well-known public channel (docs/companion_protocol.md:
+// "Index 0: Reserved for public channels"). See RegisterPublicChannel.
+const PublicChannelSlot = 0
+
 // channelNameFieldLen is CMD_SET_CHANNEL/RESP_CODE_CHANNEL_INFO's fixed
 // 32-byte name field (examples/companion_radio/MyMesh.cpp: `strcpy(&out_frame[i],
 // channel.name); i += 32`). The name is a null-terminated C string within

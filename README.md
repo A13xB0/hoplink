@@ -79,12 +79,22 @@ message is only lost if both miss it:
    messages for it. hoplink drains that queue on `PUSH_CODE_MSG_WAITING`
    and every ~10s regardless (in case that notification itself was missed).
    The device's own queue persists across hoplink's momentary hiccups in a
-   way a local buffer alone can't.
+   way a local buffer alone can't. On startup (and every reconnect), hoplink
+   logs each channel's registration outcome — which slot it landed on, and
+   whether it was already installed there from a previous run or freshly
+   added — so you can confirm the device is actually covered by this path.
 
 Both paths feed the same dedup logic, so a message delivered via both is
 only ever posted once. The device only has 7 non-public channel slots; if
 they're all in use by unrelated channels, registration for the overflow
 falls back to raw-log-only for that channel (logged, not fatal).
+
+The **public channel** (`meshcore.public: true`) works differently: it's
+always registered at the device's fixed public slot (index 0), never
+searched for or claimed like the 7 private slots — every other MeshCore
+client (and the companion apps' own UI) expects it there too. If slot 0
+already holds a different, non-empty channel, hoplink refuses to overwrite
+it and falls back to raw-log-only reception for that bridge (logged).
 
 ## Requirements
 
@@ -261,6 +271,7 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 | `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "Reliable receiving" below); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
+| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within a few seconds of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on |
 
 ### `meshtastic:` (top-level)
 
@@ -313,7 +324,7 @@ each other and want to reduce RF interference between them.
 | `meshcore.enabled`    | Turn on the MeshCore side of this bridge                                             |
 | `meshcore.hashtag`    | A hashtag channel name (secret derived from it) — exactly one of `hashtag`/`secret_hex`/`public` |
 | `meshcore.secret_hex` | An explicit 32-hex-char (16-byte) private channel secret                             |
-| `meshcore.public`     | Use MeshCore's well-known default public channel                                     |
+| `meshcore.public`     | Use MeshCore's well-known default public channel — always registered at the device's fixed public slot (index 0) for device-side sync, unlike `hashtag`/`secret_hex` channels (see "Reliable receiving" above) |
 | `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
 | `meshcore.rx_scopes`  | Optional per-bridge override of the top-level `meshcore.rx_scopes`; empty/unset = use the global default |
 | `meshcore.read_only`  | Optional, defaults to `false`. If `true`, this side only ever receives from MeshCore, never transmits |

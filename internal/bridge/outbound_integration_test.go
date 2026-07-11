@@ -262,3 +262,93 @@ func TestBridge_HandleDiscordMessage_AllowsMatchingGuild(t *testing.T) {
 		t.Fatal("expected a send for a message from the configured guild")
 	}
 }
+
+// withShortRepeatRetryWait shrinks the package-level repeatRetryWait for the
+// duration of a test, restoring it afterwards, so retry_on_no_repeat tests
+// don't have to sleep for the real production wait.
+func withShortRepeatRetryWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := repeatRetryWait
+	repeatRetryWait = d
+	t.Cleanup(func() { repeatRetryWait = orig })
+}
+
+func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
+	withShortRepeatRetryWait(t, 50*time.Millisecond)
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+	b.route = meshcore.RouteFlood
+	b.retryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", 0)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-sentPackets:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected 2 sends (original + one retry), only got %d", i)
+		}
+	}
+
+	select {
+	case raw := <-sentPackets:
+		t.Fatalf("expected exactly one retry, got a further send: %v", raw)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
+	withShortRepeatRetryWait(t, 200*time.Millisecond)
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+	b.route = meshcore.RouteFlood
+	b.retryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	// Simulate the mesh repeating our own message back to us, exactly as
+	// deliverMeshcoreChannelText would on hearing it.
+	if !b.consumeSelfEcho(meshcoreEchoKey(m.channelHash, "Alice: hello")) {
+		t.Fatal("expected the echo key to be pending after transmitMeshcore")
+	}
+
+	select {
+	case raw := <-sentPackets:
+		t.Fatalf("expected no retry once a repeat was heard, got a send: %v", raw)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
+	withShortRepeatRetryWait(t, 50*time.Millisecond)
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+	b.route = meshcore.RouteFlood
+	// b.retryOnNoRepeat left false: the default.
+
+	b.transmitMeshcore(m, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	select {
+	case raw := <-sentPackets:
+		t.Fatalf("expected no retry with retry_on_no_repeat disabled, got a send: %v", raw)
+	case <-time.After(300 * time.Millisecond):
+	}
+}

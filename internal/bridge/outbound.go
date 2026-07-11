@@ -3,6 +3,7 @@ package bridge
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/hectospark/hoplink/internal/discord"
@@ -94,19 +95,39 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 	if m.cfg.MeshCore.ReadOnly {
 		return // this bridge's MeshCore side only ever receives; never transmits
 	}
+	for _, chunk := range composeChunks(name, content, meshcoreMaxChunkBytes) {
+		b.transmitMeshcore(m, chunk, 0)
+	}
+}
+
+// transmitMeshcore sends chunk once. If meshcore.retry_on_no_repeat is
+// enabled and this isn't already a retry, it schedules a check
+// repeatRetryWait later: if no self-echo of chunk was heard by then (see
+// echoUnheard), nothing repeated the message across the mesh, so it's
+// retransmitted once more. attempt is 0 for the original send, 1 for the
+// single allowed retry — purely to stop it recursing past maxRepeatRetries.
+func (b *Bridge) transmitMeshcore(m *mapping, chunk string, attempt int) {
 	session := b.meshcoreSessionRef()
 	if session == nil {
 		logf("bridge %q: meshcore not currently connected; dropping outgoing message", m.cfg.Name)
 		return
 	}
-	for _, chunk := range composeChunks(name, content, meshcoreMaxChunkBytes) {
-		b.markOutboundSent(meshcoreEchoKey(m.channelHash, chunk))
-		err := b.withTxGuard(func() error {
-			return session.SendChannelMessage(m.secret, b.route, b.hashSize, m.scopeKey, chunk)
+	echoKey := meshcoreEchoKey(m.channelHash, chunk)
+	b.markOutboundSent(echoKey)
+	err := b.withTxGuard(func() error {
+		return session.SendChannelMessage(m.secret, b.route, b.hashSize, m.scopeKey, chunk)
+	})
+	if err != nil {
+		logf("sending to meshcore channel %q: %v", m.cfg.Name, err)
+		return
+	}
+	if b.retryOnNoRepeat && attempt < maxRepeatRetries {
+		time.AfterFunc(repeatRetryWait, func() {
+			if b.echoUnheard(echoKey) {
+				logf("bridge %q: no repeat heard for message on meshcore channel within %s, retransmitting", m.cfg.Name, repeatRetryWait)
+				b.transmitMeshcore(m, chunk, attempt+1)
+			}
 		})
-		if err != nil {
-			logf("sending to meshcore channel %q: %v", m.cfg.Name, err)
-		}
 	}
 }
 
