@@ -61,6 +61,31 @@ no Discord channel involved at all.
   hoplink. There's no raw-injection equivalent to MeshCore's hashtag
   channels here — the client API doesn't expose one.
 
+### MeshCore: two independent receive paths
+
+Sending always uses hand-composed raw RF packets (`CMD_SEND_RAW_PACKET`),
+which is what gives hoplink per-bridge control over `flood_scope` and
+`path_hash_bytes`. Receiving uses **two independent paths at once**, so a
+message is only lost if both miss it:
+
+1. **Raw log** (`PUSH_CODE_LOG_RX_DATA`) — every RF packet the radio hears,
+   decrypted by hoplink itself against each configured channel secret. This
+   was originally the only path; it's a live packet-sniffer stream with a
+   bounded local buffer, so a brief processing hiccup can drop a frame.
+2. **Device-side sync** (`CMD_SET_CHANNEL` + `CMD_SYNC_NEXT_MESSAGE`) —
+   hoplink registers each configured channel on the attached radio (reusing
+   an existing matching slot, or claiming a free one; never touching a slot
+   holding an unrelated channel), and the device decrypts and queues
+   messages for it. hoplink drains that queue on `PUSH_CODE_MSG_WAITING`
+   and every ~10s regardless (in case that notification itself was missed).
+   The device's own queue persists across hoplink's momentary hiccups in a
+   way a local buffer alone can't.
+
+Both paths feed the same dedup logic, so a message delivered via both is
+only ever posted once. The device only has 7 non-public channel slots; if
+they're all in use by unrelated channels, registration for the overflow
+falls back to raw-log-only for that channel (logged, not fatal).
+
 ## Requirements
 
 - Go 1.26+ (see `go.mod`)
