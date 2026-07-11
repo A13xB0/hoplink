@@ -1,11 +1,46 @@
 package bridge
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hectospark/hoplink/internal/meshcore"
 )
+
+func TestBridge_HandleMeshcorePacket_LogsReceivedViaRawLogWithDebug(t *testing.T) {
+	m, posts := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.debug = true
+	buf := captureLog(t)
+
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+	<-posts
+
+	if !strings.Contains(buf.String(), "meshcore: received via raw log on channel_hash") {
+		t.Errorf("expected a raw-log receipt debug line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcoreChannelMessage_LogsReceivedViaSyncWithDebug(t *testing.T) {
+	m, posts := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.debug = true
+	b.hashBySlot = map[byte]byte{5: m.channelHash}
+	buf := captureLog(t)
+
+	b.handleMeshcoreChannelMessage(meshcore.ChannelMessage{
+		SlotIndex:     5,
+		TimestampUnix: 1000,
+		Text:          "Alice: hi via sync",
+	})
+	<-posts
+
+	if !strings.Contains(buf.String(), "meshcore: received via sync on channel_hash") {
+		t.Errorf("expected a sync receipt debug line, got: %s", buf.String())
+	}
+}
 
 func TestBridge_HandleMeshcoreChannelMessage_PostsToDiscord(t *testing.T) {
 	m, posts := newTestMapping(t, "general", "#general")

@@ -171,6 +171,8 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		return
 	}
 
+	b.debugf("meshtastic: received on channel index %d from %s: %q", msg.ChannelIndex, msg.FromName, msg.Text)
+
 	relayedHash := map[byte]bool{}
 	for _, m := range matches {
 		tag := formatSenderName(msg.FromName, originMeshtastic, m.senderFormat)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,5 +394,89 @@ func TestBridge_HandleDiscordMessage_DualBackendSendsToBoth(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the meshtastic send")
+	}
+}
+
+func TestBridge_HandleMeshtasticMessage_LogsReceivedWithDebug(t *testing.T) {
+	session, _, radio := dialTestMeshtasticSession(t)
+	m, posts := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	b.debug = true
+	b.SetMeshtasticSession(session)
+	buf := captureLog(t)
+
+	_ = radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
+		From:    42,
+		Channel: 1,
+		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+			Payload: []byte("hi from the mesh"),
+		}},
+	}}})
+	pumpOneTextMessage(t, b, session)
+	<-posts // wait for the post so the log line has definitely been written
+
+	if !strings.Contains(buf.String(), "meshtastic: received on channel index 1") {
+		t.Errorf("expected a debug receipt log line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshtasticMessage_StaysSilentWithoutDebug(t *testing.T) {
+	session, _, radio := dialTestMeshtasticSession(t)
+	m, posts := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m) // debug defaults to false
+	b.SetMeshtasticSession(session)
+	buf := captureLog(t)
+
+	_ = radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
+		From:    42,
+		Channel: 1,
+		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+			Payload: []byte("hi from the mesh"),
+		}},
+	}}})
+	pumpOneTextMessage(t, b, session)
+	<-posts
+
+	if strings.Contains(buf.String(), "received on channel index") {
+		t.Errorf("expected no receipt log without debug: true, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleDiscordMessage_LogsReceivedWithDebug(t *testing.T) {
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	session, _, _ := dialTestMeshtasticSession(t)
+	b := newTestBridge(m)
+	b.debug = true
+	b.SetMeshtasticSession(session)
+	buf := captureLog(t)
+
+	b.handleDiscordMessage(discord.IncomingMessage{
+		ChannelID:  "chan-1",
+		AuthorName: "Alice",
+		Content:    "hello mesh",
+	})
+
+	if !strings.Contains(buf.String(), `discord: received in channel "general" from Alice: "hello mesh"`) {
+		t.Errorf("expected a debug receipt log line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleDiscordMessage_StaysSilentWithoutDebug(t *testing.T) {
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	session, _, _ := dialTestMeshtasticSession(t)
+	b := newTestBridge(m) // debug defaults to false
+	b.SetMeshtasticSession(session)
+	buf := captureLog(t)
+
+	b.handleDiscordMessage(discord.IncomingMessage{
+		ChannelID:  "chan-1",
+		AuthorName: "Alice",
+		Content:    "hello mesh",
+	})
+
+	if strings.Contains(buf.String(), "discord: received in channel") {
+		t.Errorf("expected no receipt log without debug: true, got: %s", buf.String())
 	}
 }

@@ -176,7 +176,7 @@ See `config.example.yaml` for a fully annotated example. Summary:
 | Field           | Default | Meaning                                                                                                                                    |
 |-----------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `sender_format` | `none`  | `none` \| `short` \| `full` — how a relayed message's origin surface is shown in the sender name on every *other* destination: "Alice" (none), "Alice (MC)" (short), or "Alice (MeshCore)" (full). Applies wherever a message crosses Discord/MeshCore/Meshtastic. Override per-bridge with `sender_format` under that bridge. |
-| `debug`         | `false` | Logs every inbound message a bridge suppresses and why (our own echo, a duplicate delivery, or no configured channel matched it). Useful for diagnosing "a message reached other devices but never made it to Discord/the other mesh"; noisy in normal operation since self-echo suppression alone fires on every message a bridge itself relays |
+| `debug`         | `false` | Logs every inbound message a bridge receives *and* every one it suppresses and why (our own echo, a duplicate delivery, or no configured channel matched it) — across all four entry points (MeshCore raw log, MeshCore device-side sync, Meshtastic, Discord). Useful for diagnosing "a message reached other devices but never made it to Discord/the other mesh"; noisy in normal operation since self-echo suppression alone fires on every message a bridge itself relays |
 
 ### `meshcore:` (top-level)
 

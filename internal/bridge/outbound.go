@@ -39,6 +39,7 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	if strings.TrimSpace(msg.Content) == "" {
 		return
 	}
+	b.debugf("discord: received in channel %q from %s: %q", m.cfg.Name, msg.AuthorName, msg.Content)
 	if m.cfg.GuildID != "" && msg.GuildID != "" && m.cfg.GuildID != msg.GuildID {
 		logf("bridge %q: ignoring message from guild %q (configured for guild %q)", m.cfg.Name, msg.GuildID, m.cfg.GuildID)
 		return
