@@ -135,6 +135,64 @@ func TestBridge_DualPath_SyncOnlyDeliversWhenRawLogMisses(t *testing.T) {
 	}
 }
 
+func TestBridge_DualPath_SelfEchoConsumedByRawLogStillDedupesSync(t *testing.T) {
+	// Regression test for a real production bug: our own outbound send gets
+	// echoed back over RF and delivered via BOTH inbound paths. The first
+	// delivery correctly consumes the self-echo entry — but self-echo
+	// consumption alone must also mark the dedup map, or the second path's
+	// delivery of the identical echo slips through untouched, gets tagged
+	// again (e.g. "Alice (DC) (MC)"), and is posted to Discord as a visible
+	// duplicate of the sender's own message.
+	m, posts := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.hashBySlot = map[byte]byte{5: m.channelHash}
+
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+
+	// First delivery, via raw log: consumed as our own echo.
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	// Second delivery of the *same* echo, via the sync path.
+	b.handleMeshcoreChannelMessage(meshcore.ChannelMessage{
+		SlotIndex:     5,
+		TimestampUnix: 1000,
+		Text:          "Alice: hi",
+	})
+
+	select {
+	case p := <-posts:
+		t.Fatalf("expected the sync path's delivery of our own echo to be deduped too, got a duplicate post: %+v", p)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestBridge_DualPath_SelfEchoConsumedBySyncStillDedupesRawLog(t *testing.T) {
+	// Same bug, opposite delivery order: the sync path arrives first this
+	// time, consuming the self-echo entry — the raw log's later delivery of
+	// the same echo must still be caught.
+	m, posts := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.hashBySlot = map[byte]byte{5: m.channelHash}
+
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+
+	b.handleMeshcoreChannelMessage(meshcore.ChannelMessage{
+		SlotIndex:     5,
+		TimestampUnix: 1000,
+		Text:          "Alice: hi",
+	})
+
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	select {
+	case p := <-posts:
+		t.Fatalf("expected the raw-log path's delivery of our own echo to be deduped too, got a duplicate post: %+v", p)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 func TestBridge_RegisterMeshcoreChannels_PopulatesHashBySlot(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)

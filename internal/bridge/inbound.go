@@ -94,11 +94,17 @@ func (b *Bridge) handleMeshcoreChannelMessage(msg meshcore.ChannelMessage) {
 // dedup hit.
 func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, timestampUnix uint32, text string) {
 	echoKey := meshcoreEchoKey(channelHash, text)
+	dedupKey := meshcoreDedupKey(channelHash, timestampUnix, text)
 	if b.consumeSelfEcho(echoKey) {
 		b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", text, channelHash, selfEchoTTL)
+		// Mark the dedup key too: with two independent inbound paths (raw
+		// log + sync), the same physical echo can be delivered twice. This
+		// consume only fires for the first; without marking dedup here, the
+		// second delivery would find neither map populated and slip through
+		// as if it were a brand new message.
+		b.isDuplicateInbound(dedupKey)
 		return
 	}
-	dedupKey := meshcoreDedupKey(channelHash, timestampUnix, text)
 	if b.isDuplicateInbound(dedupKey) {
 		b.debugf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
 		return
@@ -161,11 +167,15 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 	}
 
 	echoKey := meshtasticEchoKey(msg.ChannelIndex, msg.Text)
+	dedupKey := meshtasticDedupKey(msg.ChannelIndex, msg.PacketID, msg.Text)
 	if b.consumeSelfEcho(echoKey) {
 		b.debugf("meshtastic: suppressing %q on channel index %d as our own echo (sent it ourselves within the last %s)", msg.Text, msg.ChannelIndex, selfEchoTTL)
+		// Mark the dedup key too: a repeated flood-hop delivery of this same
+		// echo would otherwise find neither map populated (this consume only
+		// fires once) and slip through as if it were a brand new message.
+		b.isDuplicateInbound(dedupKey)
 		return
 	}
-	dedupKey := meshtasticDedupKey(msg.ChannelIndex, msg.PacketID, msg.Text)
 	if b.isDuplicateInbound(dedupKey) {
 		b.debugf("meshtastic: suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
 		return
