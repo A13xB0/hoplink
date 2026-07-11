@@ -137,7 +137,7 @@ Or with Docker Compose:
 ```yaml
 services:
   hoplink:
-    image: ghcr.io/hectospark/hoplink:latest
+    image: ghcr.io/a13xb0/hoplink:latest
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
