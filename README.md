@@ -179,6 +179,7 @@ Or with Docker Compose:
 services:
   hoplink:
     image: ghcr.io/a13xb0/hoplink:latest
+    container_name: hoplink
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
@@ -187,6 +188,50 @@ services:
 Follow logs with `docker logs -f hoplink`. Since `config.yaml` holds your
 Discord bot token and webhook URLs, never bake it into an image or commit
 it — always mount it in at runtime.
+
+### Keeping it updated automatically
+
+Since the image is versioned but `:latest` always points at the newest
+release, [Watchtower](https://containrrr.dev/watchtower/) can pull and
+restart hoplink automatically whenever a new image is published:
+
+```yaml
+services:
+  hoplink:
+    image: ghcr.io/a13xb0/hoplink:latest
+    container_name: hoplink
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"      # only touch labeled containers, not everything on the host
+      WATCHTOWER_CLEANUP: "true"           # remove old images after a successful update
+      WATCHTOWER_POLL_INTERVAL: "300"      # auto-check every 5 minutes
+      WATCHTOWER_HTTP_API_UPDATE: "true"   # enables the manual-trigger endpoint below
+      WATCHTOWER_HTTP_API_TOKEN: "REPLACE_WITH_A_RANDOM_TOKEN" # e.g. `openssl rand -hex 32`
+```
+
+`WATCHTOWER_LABEL_ENABLE` scopes Watchtower to just the labeled container(s)
+— it won't touch anything else running on the host. To trigger an update
+immediately instead of waiting for the poll interval:
+
+```sh
+curl -H "Authorization: Bearer REPLACE_WITH_A_RANDOM_TOKEN" http://localhost:8080/v1/update
+```
+
+The API is bound to `127.0.0.1` only, so it's not reachable from outside
+the host as configured above.
 
 The container runs as an unprivileged user (`hoplink`, uid `10001`), not
 root. If your mounted `config.yaml` isn't world-readable, either
