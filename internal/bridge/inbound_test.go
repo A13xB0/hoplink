@@ -1,9 +1,12 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,17 @@ import (
 	"github.com/hectospark/hoplink/internal/discord"
 	"github.com/hectospark/hoplink/internal/meshcore"
 )
+
+// captureLog redirects the standard logger's output to a buffer for the
+// duration of the test, restoring it on cleanup.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	return &buf
+}
 
 // newTestMapping builds a mapping backed by a real httptest webhook server,
 // returning the mapping and a capture channel of (username, avatarURL, content) posts.
@@ -232,5 +246,54 @@ func TestBridge_Sweep_ExpiresOldEntries(t *testing.T) {
 	}
 	if _, ok := b.recentOutbound["fresh"]; !ok {
 		t.Error("fresh outbound entry should survive sweep")
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_LogsWhenNoChannelMatches(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	buf := captureLog(t)
+
+	// Encrypted with an unrelated secret; won't decrypt against #general.
+	otherSecret := meshcore.HashtagChannelSecret("#somewhere-else")
+	lrx := buildLogRxData(t, otherSecret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	if !strings.Contains(buf.String(), "didn't decrypt against any configured") {
+		t.Errorf("expected a log line about the undecryptable packet, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_LogsSelfEchoSuppression(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+	buf := captureLog(t)
+
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	if !strings.Contains(buf.String(), "suppressing") || !strings.Contains(buf.String(), "own echo") {
+		t.Errorf("expected a self-echo suppression log line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_LogsDuplicateSuppression(t *testing.T) {
+	m, posts := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+
+	lrx := buildLogRxData(t, m.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx) // first delivery, consumes the post
+	select {
+	case <-posts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first delivery")
+	}
+
+	buf := captureLog(t)
+	b.handleMeshcorePacket(lrx) // identical packet again: same timestamp+text
+
+	if !strings.Contains(buf.String(), "suppressing") || !strings.Contains(buf.String(), "duplicate delivery") {
+		t.Errorf("expected a duplicate-delivery suppression log line, got: %s", buf.String())
 	}
 }
