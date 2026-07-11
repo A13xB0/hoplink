@@ -1,8 +1,10 @@
-// Command hoplink bridges Discord text channels with a MeshCore mesh
-// and/or a Meshtastic mesh. MeshCore channels are relayed via raw RF packet
+// Command hoplink relays messages between MeshCore, Meshtastic, and Discord
+// — any two, or all three. MeshCore channels are relayed via raw RF packet
 // construction so Discord display names appear as the mesh sender and mesh
 // node names appear as Discord webhook usernames; Meshtastic channels are
-// relayed via its standard client API (see internal/meshtastic).
+// relayed via its standard client API (see internal/meshtastic). Discord is
+// entirely optional: with no bridge configuring a Discord side, hoplink runs
+// as a pure MeshCore<->Meshtastic relay with no gateway connection at all.
 package main
 
 import (
@@ -50,22 +52,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	preferDisplayName, err := cfg.Discord.PreferDisplayName()
-	if err != nil {
-		fatalf("%v", err) // already validated in config.Load; a real bug if this fires
-	}
-	bot, err := discord.NewBot(cfg.Discord.BotToken, preferDisplayName)
-	if err != nil {
-		fatalf("creating discord bot: %v", err)
-	}
-	if err := bot.Open(); err != nil {
-		fatalf("opening discord gateway: %v", err)
-	}
-	defer func() {
-		if err := bot.Close(); err != nil {
-			logf("closing discord gateway: %v", err)
+	var bot *discord.Bot
+	if cfg.DiscordEnabled() {
+		preferDisplayName, err := cfg.Discord.PreferDisplayName()
+		if err != nil {
+			fatalf("%v", err) // already validated in config.Load; a real bug if this fires
 		}
-	}()
+		bot, err = discord.NewBot(cfg.Discord.BotToken, preferDisplayName)
+		if err != nil {
+			fatalf("creating discord bot: %v", err)
+		}
+		if err := bot.Open(); err != nil {
+			fatalf("opening discord gateway: %v", err)
+		}
+		defer func() {
+			if err := bot.Close(); err != nil {
+				logf("closing discord gateway: %v", err)
+			}
+		}()
+	} else {
+		logf("no bridge has a Discord side configured; running as a MeshCore<->Meshtastic relay only")
+	}
 
 	br, err := bridge.New(cfg, bot)
 	if err != nil {

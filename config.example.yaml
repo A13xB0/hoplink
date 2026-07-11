@@ -1,12 +1,15 @@
 # hoplink configuration.
 #
 # Copy this file to config.yaml (or point --config at your own path) and
-# fill in your radio address(es), your Discord bot token, and one entry in
-# `bridges` per Discord channel <-> mesh mapping. Each bridge independently
-# toggles a MeshCore side and/or a Meshtastic side — enable whichever you
-# have, or both to bridge the same Discord channel to two separate meshes.
-# With both enabled on a bridge, messages also relay directly between
-# MeshCore and Meshtastic (not just via Discord) — see sender_format below.
+# fill in your radio address(es) and one entry in `bridges` per relay
+# mapping. Each bridge independently toggles a MeshCore side, a Meshtastic
+# side, and/or a Discord side — enable any two, or all three. Discord is
+# entirely optional: a bridge with no discord_channel_id/discord_webhook_url
+# set just relays directly between MeshCore and Meshtastic, with no Discord
+# gateway connection needed at all (and the whole `discord:` block below and
+# `discord.bot_token` can then be omitted). Whenever a bridge has both
+# MeshCore and Meshtastic enabled, messages relay directly between them (not
+# just via Discord) — see sender_format below.
 
 sender_format: none   # none | short | full — how a relayed message's origin
                        # surface is shown in the sender name on every OTHER
@@ -44,7 +47,9 @@ meshtastic:               # required only if some bridge has meshtastic.enabled:
   # MeshCore's hashtag channels, this bridge cannot create one for you; the
   # device itself performs that channel's encryption, not us.
 
-discord:
+discord:                # entirely optional — omit this whole block if no
+                         # bridge below sets discord_channel_id (a pure
+                         # MeshCore<->Meshtastic relay needs no Discord bot)
   bot_token: "REPLACE_WITH_YOUR_BOT_TOKEN"   # gateway bot; needed to read Discord -> mesh messages
   name_source: display_name   # display_name | username — which Discord identity
                                # to embed as the mesh sender when a message has
@@ -110,6 +115,20 @@ bridges:
   # - name: meshtastic-general
   #   discord_channel_id: "..."
   #   discord_webhook_url: "..."
+  #   meshtastic:
+  #     enabled: true
+  #     channel_name: "LongFast"
+
+  # A Discord-less bridge: relays directly between a MeshCore hashtag channel
+  # and a Meshtastic channel, with no Discord side at all. Leave
+  # discord_channel_id/discord_webhook_url unset — both meshcore.enabled and
+  # meshtastic.enabled must be true (there's nothing to relay between
+  # otherwise). You can omit the whole `discord:` block above entirely if
+  # every bridge looks like this one.
+  # - name: mc-mt-relay
+  #   meshcore:
+  #     enabled: true
+  #     hashtag: "#general"
   #   meshtastic:
   #     enabled: true
   #     channel_name: "LongFast"

@@ -48,6 +48,7 @@ func newDualBackendMapping(t *testing.T, senderFormat string) (*mapping, chan we
 			Meshtastic:        config.BridgeMeshtastic{Enabled: true, ChannelName: "general"},
 		},
 		webhook:           discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		discordEnabled:    true,
 		maxBytes:          320,
 		senderFormat:      senderFormat,
 		meshcoreEnabled:   true,

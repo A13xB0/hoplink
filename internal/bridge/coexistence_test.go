@@ -144,6 +144,40 @@ func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
 	}
 }
 
+func TestNew_WithoutDiscord_BuildsMeshOnlyBridge(t *testing.T) {
+	cfg := &config.Config{
+		Meshcore:   config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshtastic: config.Meshtastic{Host: "5.6.7.8"},
+		Limits:     config.Limits{MaxMessageBytes: 320},
+		Bridges: []config.Bridge{{
+			Name:       "general",
+			MeshCore:   config.BridgeMeshCore{Enabled: true, Hashtag: "#general"},
+			Meshtastic: config.BridgeMeshtastic{Enabled: true, ChannelName: "LongFast"},
+		}},
+	}
+
+	b, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(b.byChan) != 0 {
+		t.Errorf("byChan should be empty for a bridge with no Discord side, got %d entries", len(b.byChan))
+	}
+	if len(b.byName) != 1 {
+		t.Fatalf("byName should have 1 mapping, got %d", len(b.byName))
+	}
+	m := b.byName[0]
+	if m.discordEnabled {
+		t.Error("discordEnabled should be false")
+	}
+	if m.webhook != nil {
+		t.Error("webhook should be nil when this bridge has no Discord side")
+	}
+	if b.notify != nil {
+		t.Error("notify should be nil when New is called with a nil bot")
+	}
+}
+
 func TestNew_CoexistenceDefaultsToEnabled(t *testing.T) {
 	cfg := &config.Config{
 		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},

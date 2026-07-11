@@ -13,8 +13,8 @@ import (
 // handleMeshcorePacket is called for every RF packet the MeshCore radio
 // hears. It tries to decrypt GRP_TXT payloads against each meshcore-enabled
 // bridge's secret and, on a match, reposts the message to that bridge's
-// Discord webhook and, if the bridge also has Meshtastic enabled, relays it
-// there too.
+// Discord webhook (if it has one) and, if the bridge also has Meshtastic
+// enabled, relays it there too.
 func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
@@ -39,7 +39,9 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		}
 
 		sender, body := splitSenderText(dec.Text)
-		b.postToWebhook(m, sender, formatSenderName(sender, originMeshcore, m.senderFormat), body)
+		if m.discordEnabled {
+			b.postToWebhook(m, sender, formatSenderName(sender, originMeshcore, m.senderFormat), body)
+		}
 		if m.meshtasticEnabled {
 			b.sendMeshtastic(m, formatSenderName(sender, originMeshcore, m.senderFormat), body)
 		}
@@ -50,8 +52,8 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 // handleMeshtasticMessage is called for every TEXT_MESSAGE_APP packet the
 // Meshtastic device hears. Unlike MeshCore, sender identity is
 // protocol-native (msg.FromName, resolved via session's node DB) — never
-// text-parsed. On a match, reposts to Discord and, if the bridge also has
-// MeshCore enabled, relays it there too.
+// text-parsed. On a match, reposts to Discord (if the bridge has one) and,
+// if the bridge also has MeshCore enabled, relays it there too.
 func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshtastic.TextMessage) {
 	for _, m := range b.byName {
 		if !m.meshtasticEnabled {
@@ -75,7 +77,9 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 			return
 		}
 
-		b.postToWebhook(m, msg.FromName, formatSenderName(msg.FromName, originMeshtastic, m.senderFormat), msg.Text)
+		if m.discordEnabled {
+			b.postToWebhook(m, msg.FromName, formatSenderName(msg.FromName, originMeshtastic, m.senderFormat), msg.Text)
+		}
 		if m.meshcoreEnabled {
 			b.sendMeshcore(m, formatSenderName(msg.FromName, originMeshtastic, m.senderFormat), msg.Text)
 		}

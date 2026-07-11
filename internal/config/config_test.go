@@ -228,6 +228,88 @@ bridges:
 	}
 }
 
+func TestLoad_AllowsBridgeWithNoDiscordSideWhenBothMeshBackendsEnabled(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+meshtastic:
+  host: 5.6.7.8
+bridges:
+  - name: general
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.DiscordEnabled() {
+		t.Error("DiscordEnabled() should be false when no bridge sets discord_channel_id")
+	}
+}
+
+func TestLoad_RejectsNoDiscordBridgeWithOnlyOneMeshBackendEnabled(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+bridges:
+  - name: general
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "must have both meshcore.enabled and meshtastic.enabled set") {
+		t.Fatalf("expected a no-discord-needs-both-backends error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsMismatchedDiscordChannelAndWebhook(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+meshtastic:
+  host: 5.6.7.8
+bridges:
+  - name: general
+    discord_channel_id: "123"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "must both be set, or both left empty") {
+		t.Fatalf("expected a mismatched-discord-fields error, got %v", err)
+	}
+}
+
+func TestLoad_DoesNotRequireBotTokenWhenNoBridgeUsesDiscord(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+meshtastic:
+  host: 5.6.7.8
+bridges:
+  - name: general
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
+`
+	if _, err := Load(writeTemp(t, cfg)); err != nil {
+		t.Fatalf("Load should succeed with no discord.bot_token when no bridge uses Discord: %v", err)
+	}
+}
+
 func TestDiscord_PreferDisplayName_DefaultsTrue(t *testing.T) {
 	got, err := Discord{}.PreferDisplayName()
 	if err != nil {

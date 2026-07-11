@@ -163,6 +163,7 @@ func newTestMeshtasticMapping(t *testing.T, name, discordChannelID, meshtasticCh
 			Meshtastic:        config.BridgeMeshtastic{Enabled: true, ChannelName: meshtasticChannelName},
 		},
 		webhook:           discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		discordEnabled:    true,
 		maxBytes:          320,
 		meshtasticEnabled: true,
 	}
@@ -360,6 +361,7 @@ func TestBridge_HandleDiscordMessage_DualBackendSendsToBoth(t *testing.T) {
 			Meshtastic:        config.BridgeMeshtastic{Enabled: true, ChannelName: "general"},
 		},
 		webhook:           discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		discordEnabled:    true,
 		maxBytes:          320,
 		meshcoreEnabled:   true,
 		meshtasticEnabled: true,

@@ -50,6 +50,7 @@ func TestBridge_HandleDiscordMessage_SendsComposedTextToMesh(t *testing.T) {
 		secret:          secret,
 		channelHash:     chHash,
 		webhook:         discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		discordEnabled:  true,
 		maxBytes:        320,
 		meshcoreEnabled: true,
 	}
@@ -107,6 +108,7 @@ func TestBridge_HandleDiscordMessage_AppliesConfiguredFloodScope(t *testing.T) {
 		secret:          secret,
 		channelHash:     chHash,
 		webhook:         discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		discordEnabled:  true,
 		maxBytes:        320,
 		meshcoreEnabled: true,
 	}

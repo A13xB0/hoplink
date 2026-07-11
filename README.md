@@ -5,19 +5,26 @@
 > hardware and has a real test suite, but review the code yourself before
 > relying on it for anything important.
 
-A Discord bridge for [MeshCore](https://github.com/meshcore-dev/MeshCore) and
-[Meshtastic](https://meshtastic.org/) mesh networks.
+A bridge connecting [MeshCore](https://github.com/meshcore-dev/MeshCore),
+[Meshtastic](https://meshtastic.org/), and Discord — relay between any two of
+these, or all three at once. **Discord is entirely optional**: a bridge can
+just as well relay purely between a MeshCore mesh and a Meshtastic mesh, with
+no Discord channel involved at all.
 
 - **Discord → mesh**: your Discord display name is embedded as the visible
   sender ("`Alice: hello`"), so people on the mesh know who's talking.
 - **Mesh → Discord**: each node posts under its own name and a generated
   avatar (via a Discord webhook, so it looks like the node has its own
   Discord identity — not "the bridge bot said: ...").
-- Any bridge can relay MeshCore, Meshtastic, or both at once, into the same
-  Discord channel. **With both enabled on one bridge, messages also relay
-  directly between MeshCore and Meshtastic** — not just via Discord.
+- **Mesh → mesh**: MeshCore and Meshtastic can relay directly to each other,
+  with or without Discord in the mix.
+- Any bridge independently enables its MeshCore side, its Meshtastic side,
+  and/or its Discord side — pick any two, or all three. A bridge with no
+  Discord side needs both MeshCore and Meshtastic enabled (otherwise it has
+  nothing to relay between); with Discord enabled, either mesh side alone is
+  fine.
 - Oversized outbound messages are rejected (not silently chunked forever)
-  with a reply in Discord explaining why.
+  with a reply in Discord explaining why (Discord-side bridges only).
 - `sender_format` controls how a relayed message's origin is shown on every
   *other* surface it lands on — e.g. a MeshCore message from "Alice" can show
   up as "Alice", "Alice (MC)", or "Alice (MeshCore)" on Discord and on
@@ -46,7 +53,8 @@ A Discord bridge for [MeshCore](https://github.com/meshcore-dev/MeshCore) and
 - A Meshtastic device with its TCP client API reachable (default port 4403)
   — required only if you're bridging Meshtastic
 - A Discord bot (for reading messages) and, per bridged channel, a Discord
-  webhook (for posting under node names)
+  webhook (for posting under node names) — **only if at least one bridge has
+  a Discord side**; entirely optional for a pure MeshCore↔Meshtastic bridge
 
 ## Setup
 
@@ -56,7 +64,10 @@ A Discord bridge for [MeshCore](https://github.com/meshcore-dev/MeshCore) and
    cp config.example.yaml config.yaml
    ```
 
-2. **Create a Discord bot**:
+2. **Only if you want a Discord side on any bridge** — skip this step
+   entirely for a pure MeshCore↔Meshtastic bridge:
+
+   **Create a Discord bot**:
    - Go to <https://discord.com/developers/applications> → New Application.
    - **Bot** tab → Reset Token → copy it into `discord.bot_token` in
      `config.yaml` (shown only once).
@@ -68,14 +79,15 @@ A Discord bridge for [MeshCore](https://github.com/meshcore-dev/MeshCore) and
      Message History**. Open the generated URL and invite the bot to your
      server(s).
 
-3. **Create a webhook per bridged Discord channel**: in that channel's
-   settings → Integrations → Webhooks → New Webhook → copy its URL into that
-   bridge's `discord_webhook_url`. This is what lets each mesh node post
-   under its own name/avatar instead of the bot's.
+3. **Create a webhook per Discord-bridged channel** (skip if none): in that
+   channel's settings → Integrations → Webhooks → New Webhook → copy its URL
+   into that bridge's `discord_webhook_url`. This is what lets each mesh node
+   post under its own name/avatar instead of the bot's.
 
 4. Fill in `meshcore:` and/or `meshtastic:` with your radio's address, and
-   add one entry under `bridges:` per Discord channel you want bridged (see
-   [Config reference](#config-reference) below).
+   add one entry under `bridges:` per mapping you want — a Discord channel
+   bridged to one or both meshes, or a Discord-less MeshCore↔Meshtastic
+   relay (see [Config reference](#config-reference) below).
 
 ## Running
 
@@ -168,7 +180,10 @@ has `meshtastic.enabled: true`.
 | `host` | —       | Attached device's IP                       |
 | `port` | `4403`  | Device's client-API TCP port                |
 
-### `discord:`
+### `discord:` (top-level)
+
+Omit entirely if no bridge has a Discord side. Required only if at least one
+bridge sets `discord_channel_id`.
 
 | Field         | Default        | Meaning                                                                                          |
 |---------------|----------------|----------------------------------------------------------------------------------------------------|
@@ -191,13 +206,13 @@ each other and want to reduce RF interference between them.
 | `avoid_simultaneous_tx`  | `true`  | Serialises all outbound MeshCore and Meshtastic sends so this process never asks both radios to transmit at the same instant. Best-effort only — neither protocol reports back exact transmit-complete timing, so this reduces the odds of overlap rather than guaranteeing it. No effect if a bridge only uses one backend. |
 | `min_gap_ms`             | `100`   | Extra pause held after each send before the next is allowed to start, approximating airtime settle time. Raise this if you still see interference. |
 
-### `bridges:` (one entry per Discord channel)
+### `bridges:` (one entry per relay mapping)
 
 | Field                 | Meaning                                                                          |
 |-----------------------|-------------------------------------------------------------------------------------|
 | `name`                | Unique label (used in logs)                                                          |
-| `discord_channel_id`  | The Discord channel to bridge                                                        |
-| `discord_webhook_url` | That channel's webhook (for posting under node names)                                |
+| `discord_channel_id`  | Optional — the Discord channel to bridge. Leave unset (along with `discord_webhook_url`) for a bridge with no Discord side; if set, `discord_webhook_url` must be too |
+| `discord_webhook_url` | Optional — that channel's webhook (for posting under node names); required iff `discord_channel_id` is set |
 | `guild_id`            | Optional; if set, messages from any other guild are ignored (a sanity check — not needed for correct routing, since Discord channel IDs are already globally unique) |
 | `max_message_bytes`   | Optional per-bridge override of `limits.max_message_bytes`                           |
 | `sender_format`       | Optional per-bridge override of the top-level `sender_format`                        |
@@ -208,10 +223,12 @@ each other and want to reduce RF interference between them.
 | `meshtastic.enabled`  | Turn on the Meshtastic side of this bridge                                           |
 | `meshtastic.channel_name` | Name of a channel slot **already configured on the attached device**             |
 
-A bridge can enable MeshCore, Meshtastic, or both. With just one enabled, it
-relays to/from Discord only. With both enabled, it *also* relays directly
-between MeshCore and Meshtastic — Discord, MeshCore, and Meshtastic all stay
-in sync with each other, not just each with Discord individually.
+A bridge needs at least two of its three sides enabled: Discord+MeshCore,
+Discord+Meshtastic, MeshCore+Meshtastic (no Discord fields at all), or all
+three. Whenever both MeshCore and Meshtastic are enabled on a bridge,
+messages also relay directly between them — not just via Discord — so with
+all three enabled, Discord, MeshCore, and Meshtastic all stay in sync with
+each other.
 
 ## Testing
 

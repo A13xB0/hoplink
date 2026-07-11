@@ -1,8 +1,10 @@
-// Package bridge wires meshcore.Session and/or meshtastic.Session to a
-// discord.Bot/WebhookSender set. Mesh channel messages are decrypted/decoded
-// and reposted to Discord under the originating node's name; Discord
-// messages are composed as "<DisplayName>: <content>" and sent to whichever
-// mesh backend(s) a bridge has enabled.
+// Package bridge wires meshcore.Session and/or meshtastic.Session to an
+// optional discord.Bot/WebhookSender set. Mesh channel messages are
+// decrypted/decoded and, per bridge, reposted to Discord (if configured)
+// under the originating node's name and/or relayed directly to the other
+// mesh backend; Discord messages are composed as "<DisplayName>: <content>"
+// and sent to whichever mesh backend(s) a bridge has enabled. A bridge with
+// no Discord side relays purely between MeshCore and Meshtastic.
 package bridge
 
 import (
@@ -28,13 +30,15 @@ const inboundDedupTTL = 60 * time.Second
 // the mesh floods it back to us.
 const selfEchoTTL = 10 * time.Second
 
-// mapping is one bridge entry: a Discord channel/webhook plus whichever of
-// MeshCore/Meshtastic it has enabled.
+// mapping is one bridge entry: whichever of MeshCore/Meshtastic/Discord it
+// has enabled (at least two of the three).
 type mapping struct {
 	cfg          config.Bridge
-	webhook      *discord.WebhookSender
-	maxBytes     int    // resolved from cfg.MaxMessageBytes or the global default
-	senderFormat string // resolved from cfg.SenderFormat or the global default; "none"/"short"/"full"
+	webhook      *discord.WebhookSender // nil iff !discordEnabled
+	maxBytes     int                    // resolved from cfg.MaxMessageBytes or the global default
+	senderFormat string                 // resolved from cfg.SenderFormat or the global default; "none"/"short"/"full"
+
+	discordEnabled bool
 
 	meshcoreEnabled bool
 	secret          []byte // MeshCore channel secret; valid iff meshcoreEnabled
@@ -99,8 +103,11 @@ func (b *Bridge) withTxGuard(send func() error) error {
 	return err
 }
 
-// New builds a Bridge for cfg's bridge mappings and wires bot's message
-// handler. It does not connect to either mesh backend — attach sessions via
+// New builds a Bridge for cfg's bridge mappings and, if bot is non-nil,
+// wires its message handler. bot is nil when no bridge has a Discord side
+// configured (config.Config.DiscordEnabled() is false) — hoplink then runs
+// as a pure MeshCore<->Meshtastic relay with no Discord gateway connection.
+// New does not connect to either mesh backend — attach sessions via
 // RunMeshcore/RunMeshtastic (each may be called repeatedly across
 // reconnects; the caller, cmd/hoplink, owns that lifecycle).
 func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
@@ -110,7 +117,6 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	}
 
 	b := &Bridge{
-		notify:         bot,
 		route:          route,
 		hashSize:       cfg.Meshcore.PathHashBytes,
 		scopeKey:       cfg.Meshcore.ScopeKey(),
@@ -122,13 +128,17 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	}
 
 	for _, bc := range cfg.Bridges {
+		discordEnabled := bc.DiscordChannelID != ""
 		m := &mapping{
 			cfg:               bc,
-			webhook:           discord.NewWebhookSender(bc.DiscordWebhookURL),
 			maxBytes:          bc.ResolvedMaxMessageBytes(cfg.Limits.MaxMessageBytes),
 			senderFormat:      bc.ResolvedSenderFormat(cfg.SenderFormat),
+			discordEnabled:    discordEnabled,
 			meshcoreEnabled:   bc.MeshCore.Enabled,
 			meshtasticEnabled: bc.Meshtastic.Enabled,
+		}
+		if discordEnabled {
+			m.webhook = discord.NewWebhookSender(bc.DiscordWebhookURL)
 		}
 		if bc.MeshCore.Enabled {
 			secret, err := bc.Secret()
@@ -143,10 +153,15 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 			m.channelHash = chHash
 		}
 		b.byName = append(b.byName, m)
-		b.byChan[bc.DiscordChannelID] = m
+		if discordEnabled {
+			b.byChan[bc.DiscordChannelID] = m
+		}
 	}
 
-	bot.OnMessage(b.handleDiscordMessage)
+	if bot != nil {
+		b.notify = bot
+		bot.OnMessage(b.handleDiscordMessage)
+	}
 	return b, nil
 }
 

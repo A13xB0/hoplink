@@ -1,8 +1,10 @@
 // Package config loads and validates the hoplink YAML configuration: the
 // MeshCore companion TCP endpoint, the optional Meshtastic device TCP
-// endpoint, the Discord bot token, global message-size limits, and the list
-// of bridges — each mapping a Discord channel to a MeshCore channel, a
-// Meshtastic channel, or both.
+// endpoint, the optional Discord bot token, global message-size limits, and
+// the list of bridges — each relaying between a MeshCore channel, a
+// Meshtastic channel, and/or a Discord channel. A bridge needs at least two
+// of the three; Discord is entirely optional, letting a bridge relay purely
+// between MeshCore and Meshtastic with no Discord side at all.
 package config
 
 import (
@@ -100,7 +102,10 @@ func (m Meshtastic) Configured() bool {
 	return strings.TrimSpace(m.Host) != ""
 }
 
-// Discord holds the bot's gateway credentials.
+// Discord holds the bot's gateway credentials. The whole block is optional
+// — omit it entirely (and leave every bridge's discord_channel_id/
+// discord_webhook_url unset) to run hoplink as a pure MeshCore<->Meshtastic
+// bridge with no Discord side at all.
 type Discord struct {
 	BotToken   string `yaml:"bot_token"`
 	NameSource string `yaml:"name_source"` // "display_name" (default) or "username"
@@ -176,11 +181,17 @@ type BridgeMeshtastic struct {
 	ChannelName string `yaml:"channel_name"`
 }
 
-// Bridge maps one Discord text channel + webhook to a MeshCore channel, a
-// Meshtastic channel, or both (independently toggled via MeshCore.Enabled /
-// Meshtastic.Enabled).
+// Bridge relays between a MeshCore channel, a Meshtastic channel, and/or a
+// Discord text channel + webhook — each side independently toggled
+// (MeshCore.Enabled / Meshtastic.Enabled / a non-empty DiscordChannelID). A
+// bridge needs at least two of the three sides: Discord+MeshCore,
+// Discord+Meshtastic, MeshCore+Meshtastic (Discord omitted entirely), or all
+// three.
 type Bridge struct {
-	Name              string `yaml:"name"`
+	Name string `yaml:"name"`
+	// DiscordChannelID and DiscordWebhookURL are optional: leave both empty
+	// for a bridge with no Discord side (a pure MeshCore<->Meshtastic relay).
+	// If either is set, both must be.
 	DiscordChannelID  string `yaml:"discord_channel_id"`
 	DiscordWebhookURL string `yaml:"discord_webhook_url"`
 	GuildID           string `yaml:"guild_id"`          // optional; if set, incoming messages from a different guild are ignored (defensive check, not required for routing correctness — Discord channel IDs are already globally unique)
@@ -232,6 +243,18 @@ func (b Bridge) ResolvedSenderFormat(global string) string {
 	return global
 }
 
+// DiscordEnabled reports whether any bridge has a Discord side configured.
+// When false, hoplink runs with no Discord gateway connection at all —
+// purely relaying between MeshCore and Meshtastic.
+func (c *Config) DiscordEnabled() bool {
+	for _, b := range c.Bridges {
+		if strings.TrimSpace(b.DiscordChannelID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Load reads and validates a hoplink config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -281,10 +304,11 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	var errs []string
 
-	anyMeshcore, anyMeshtastic := false, false
+	anyMeshcore, anyMeshtastic, anyDiscord := false, false, false
 	for _, b := range c.Bridges {
 		anyMeshcore = anyMeshcore || b.MeshCore.Enabled
 		anyMeshtastic = anyMeshtastic || b.Meshtastic.Enabled
+		anyDiscord = anyDiscord || strings.TrimSpace(b.DiscordChannelID) != ""
 	}
 
 	if anyMeshcore {
@@ -305,8 +329,8 @@ func (c *Config) Validate() error {
 		errs = append(errs, "meshtastic.host is required because at least one bridge has meshtastic.enabled: true")
 	}
 
-	if strings.TrimSpace(c.Discord.BotToken) == "" {
-		errs = append(errs, "discord.bot_token is required")
+	if anyDiscord && strings.TrimSpace(c.Discord.BotToken) == "" {
+		errs = append(errs, "discord.bot_token is required because at least one bridge has discord_channel_id set")
 	}
 	if _, err := c.Discord.PreferDisplayName(); err != nil {
 		errs = append(errs, err.Error())
@@ -371,11 +395,13 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("bridges[%s].sender_format: %s", label, err.Error()))
 		}
 
-		if strings.TrimSpace(b.DiscordChannelID) == "" {
-			errs = append(errs, fmt.Sprintf("bridges[%s]: discord_channel_id is required", label))
+		hasChannel := strings.TrimSpace(b.DiscordChannelID) != ""
+		hasWebhook := strings.TrimSpace(b.DiscordWebhookURL) != ""
+		if hasChannel != hasWebhook {
+			errs = append(errs, fmt.Sprintf("bridges[%s]: discord_channel_id and discord_webhook_url must both be set, or both left empty (empty means this bridge has no Discord side)", label))
 		}
-		if strings.TrimSpace(b.DiscordWebhookURL) == "" {
-			errs = append(errs, fmt.Sprintf("bridges[%s]: discord_webhook_url is required", label))
+		if !hasChannel && !(b.MeshCore.Enabled && b.Meshtastic.Enabled) {
+			errs = append(errs, fmt.Sprintf("bridges[%s]: a bridge with no Discord side must have both meshcore.enabled and meshtastic.enabled set (otherwise it has nothing to relay between)", label))
 		}
 	}
 
