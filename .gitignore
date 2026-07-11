@@ -1,0 +1,18 @@
+# Real config with live secrets (bot token, webhook URLs, radio addresses).
+# Copy config.example.yaml to config.yaml and never commit the copy.
+config.yaml
+
+# Build artifacts
+/hoplink
+/bin/
+*.exe
+*.test
+
+# Go
+*.out
+
+# Editor/OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store

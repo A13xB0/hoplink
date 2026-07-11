@@ -1,0 +1,174 @@
+package bridge
+
+import (
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hectospark/hoplink/internal/config"
+	"github.com/hectospark/hoplink/internal/discord"
+)
+
+func TestBridge_WithTxGuard_SerializesConcurrentSends(t *testing.T) {
+	b := &Bridge{txGuardEnabled: true, txGuardGap: 20 * time.Millisecond}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = b.withTxGuard(func() error {
+				mu.Lock()
+				active++
+				if active > maxActive {
+					maxActive = active
+				}
+				mu.Unlock()
+
+				time.Sleep(30 * time.Millisecond)
+
+				mu.Lock()
+				active--
+				mu.Unlock()
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	if maxActive > 1 {
+		t.Errorf("expected sends to never overlap while the guard is enabled, but saw %d concurrent", maxActive)
+	}
+}
+
+func TestBridge_WithTxGuard_DisabledAllowsConcurrentSends(t *testing.T) {
+	b := &Bridge{txGuardEnabled: false}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = b.withTxGuard(func() error {
+				mu.Lock()
+				active++
+				if active > maxActive {
+					maxActive = active
+				}
+				mu.Unlock()
+				<-release
+				return nil
+			})
+		}()
+	}
+
+	// Give both goroutines a chance to enter concurrently before releasing them.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if maxActive < 2 {
+		t.Errorf("expected sends to run concurrently when the guard is disabled, maxActive=%d", maxActive)
+	}
+}
+
+func TestBridge_WithTxGuard_EnforcesGapAfterSend(t *testing.T) {
+	b := &Bridge{txGuardEnabled: true, txGuardGap: 100 * time.Millisecond}
+
+	start := time.Now()
+	_ = b.withTxGuard(func() error { return nil })
+	elapsed := time.Since(start)
+
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("expected withTxGuard to hold the configured gap after sending, elapsed=%v", elapsed)
+	}
+}
+
+func TestBridge_WithTxGuard_NoGapWhenZero(t *testing.T) {
+	b := &Bridge{txGuardEnabled: true, txGuardGap: 0}
+
+	start := time.Now()
+	_ = b.withTxGuard(func() error { return nil })
+	elapsed := time.Since(start)
+
+	if elapsed > 20*time.Millisecond {
+		t.Errorf("expected no meaningful delay with a zero gap, elapsed=%v", elapsed)
+	}
+}
+
+func TestBridge_WithTxGuard_PropagatesSendError(t *testing.T) {
+	b := &Bridge{txGuardEnabled: true}
+	wantErr := errors.New("boom")
+	if err := b.withTxGuard(func() error { return wantErr }); err != wantErr {
+		t.Errorf("err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
+	falseVal := false
+	cfg := &config.Config{
+		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Discord:  config.Discord{BotToken: "abc"},
+		Limits:   config.Limits{MaxMessageBytes: 320},
+		Coexistence: config.Coexistence{
+			AvoidSimultaneousTX: &falseVal,
+			MinGapMs:            250,
+		},
+		Bridges: []config.Bridge{{
+			Name:              "general",
+			DiscordChannelID:  "1",
+			DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+			MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#general"},
+		}},
+	}
+	bot, err := discord.NewBot("fake-token", true)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	b, err := New(cfg, bot)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if b.txGuardEnabled {
+		t.Error("txGuardEnabled should be false when avoid_simultaneous_tx: false")
+	}
+	if b.txGuardGap != 250*time.Millisecond {
+		t.Errorf("txGuardGap = %v, want 250ms", b.txGuardGap)
+	}
+}
+
+func TestNew_CoexistenceDefaultsToEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Discord:  config.Discord{BotToken: "abc"},
+		Limits:   config.Limits{MaxMessageBytes: 320},
+		Coexistence: config.Coexistence{
+			MinGapMs: 100,
+		},
+		Bridges: []config.Bridge{{
+			Name:              "general",
+			DiscordChannelID:  "1",
+			DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+			MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#general"},
+		}},
+	}
+	bot, err := discord.NewBot("fake-token", true)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	b, err := New(cfg, bot)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !b.txGuardEnabled {
+		t.Error("txGuardEnabled should default to true (AvoidSimultaneousTX unset)")
+	}
+}

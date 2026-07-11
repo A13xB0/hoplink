@@ -1,0 +1,115 @@
+# hoplink configuration.
+#
+# Copy this file to config.yaml (or point --config at your own path) and
+# fill in your radio address(es), your Discord bot token, and one entry in
+# `bridges` per Discord channel <-> mesh mapping. Each bridge independently
+# toggles a MeshCore side and/or a Meshtastic side — enable whichever you
+# have, or both to bridge the same Discord channel to two separate meshes.
+# With both enabled on a bridge, messages also relay directly between
+# MeshCore and Meshtastic (not just via Discord) — see sender_format below.
+
+sender_format: none   # none | short | full — how a relayed message's origin
+                       # surface is shown in the sender name on every OTHER
+                       # destination it's relayed to, e.g. a MeshCore message
+                       # from "Alice" shows up as "Alice" (none), "Alice (MC)"
+                       # (short), or "Alice (MeshCore)" (full) on Discord and
+                       # on Meshtastic (if that bridge relays to both).
+                       # Applies to all three surfaces (Discord/MeshCore/
+                       # Meshtastic) uniformly. Override per-bridge with
+                       # sender_format below.
+
+meshcore:                # required only if some bridge has meshcore.enabled: true
+  host: 192.168.4.1   # your companion radio's IP (its built-in WiFi/TCP server)
+  port: 5000          # default MeshCore companion TCP port
+  app_name: hoplink  # identifies this client to the radio during APP_START
+  route: flood        # flood | direct — flood is correct for hashtag/group chat
+  path_hash_bytes: 3  # 2 | 3 — bytes/hop for path tracking on our outgoing
+                      # packets; repeaters read this straight off our packet
+                      # header as they relay it, so this is the one place
+                      # that actually controls it. 1-byte hashes are rejected.
+  flood_scope: ""     # optional named flood scope/region (e.g. "myregion").
+                      # Leave blank for unscoped ROUTE_TYPE_FLOOD (the
+                      # MeshCore default). Set this if your repeaters run in
+                      # "scope-only" mode — they reject unscoped flood
+                      # packets outright, so on such a mesh our messages
+                      # would otherwise never make it past the first hop.
+                      # Must match the scope name your repeaters are
+                      # configured with (CMD_SET_DEFAULT_FLOOD_SCOPE).
+
+meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
+  host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
+  port: 4403          # Meshtastic's default client-API TCP port
+  # Note: a Meshtastic "channel" here must already exist as a slot on the
+  # attached device (set up via the official Meshtastic app/CLI) — unlike
+  # MeshCore's hashtag channels, this bridge cannot create one for you; the
+  # device itself performs that channel's encryption, not us.
+
+discord:
+  bot_token: "REPLACE_WITH_YOUR_BOT_TOKEN"   # gateway bot; needed to read Discord -> mesh messages
+  name_source: display_name   # display_name | username — which Discord identity
+                               # to embed as the mesh sender when a message has
+                               # no per-server nickname set (server nickname
+                               # always wins over either option when present).
+
+limits:
+  max_message_bytes: 320   # a Discord -> mesh message composed as "<Name>: <content>"
+                            # longer than this (in UTF-8 bytes, before any
+                            # chunking) is rejected outright — not chunked —
+                            # and the sender is told why, in Discord only.
+                            # Roughly two mesh messages' worth by default.
+                            # Override per-bridge with max_message_bytes below.
+
+coexistence:
+  avoid_simultaneous_tx: true   # if you run both a MeshCore radio and a Meshtastic
+                                  # device near each other, this serialises all our
+                                  # outbound sends so we never ask both radios to
+                                  # transmit at the same instant — a best-effort RF
+                                  # interference mitigation (we can't observe actual
+                                  # transmit-complete timing from either radio, so
+                                  # this reduces the odds of overlap, not guarantees
+                                  # it). Has no effect if you only use one backend.
+  min_gap_ms: 100                # extra pause held after each send before the next
+                                  # is allowed to start, approximating airtime settle
+                                  # time. Increase if you still see interference.
+
+bridges:
+  # A MeshCore hashtag channel: secret is derived as sha256("#name")[0:16].
+  - name: general
+    discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID"
+    discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL"
+    guild_id: ""              # optional; if set, messages from any other guild are ignored (sanity check, not required for routing)
+    # max_message_bytes: 480  # optional per-bridge override of limits.max_message_bytes
+    # sender_format: short    # optional per-bridge override of the top-level sender_format
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+    # meshtastic:             # uncomment to ALSO relay this same Discord channel to a Meshtastic
+    #   enabled: true         # channel — and, since both would then be enabled on this bridge,
+    #   channel_name: "LongFast"  # MeshCore <-> Meshtastic messages relay directly too
+
+  # A MeshCore private channel: paste an explicit 32-hex-char (16-byte)
+  # secret, e.g. one you generated in a MeshCore app's "create private
+  # channel" flow.
+  # - name: emergency
+  #   discord_channel_id: "..."
+  #   discord_webhook_url: "..."
+  #   meshcore:
+  #     enabled: true
+  #     secret_hex: "9cd8fcf22a47333b591d96a2b848b73f"
+
+  # The well-known default MeshCore public channel (same key on every radio).
+  # - name: public-lobby
+  #   discord_channel_id: "..."
+  #   discord_webhook_url: "..."
+  #   meshcore:
+  #     enabled: true
+  #     public: true
+
+  # Meshtastic-only bridge (channel_name must match a channel slot already
+  # configured on the attached device).
+  # - name: meshtastic-general
+  #   discord_channel_id: "..."
+  #   discord_webhook_url: "..."
+  #   meshtastic:
+  #     enabled: true
+  #     channel_name: "LongFast"
