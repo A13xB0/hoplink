@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="hoplink — bridging MeshCore, Meshtastic & Discord" width="360">
+</p>
+
 # hoplink
 
 > **Note:** This project is fully "vibe coded" — written conversationally
