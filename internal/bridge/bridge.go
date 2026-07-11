@@ -69,6 +69,14 @@ type Bridge struct {
 	byName   []*mapping
 	byChan   map[string]*mapping // Discord channel ID -> mapping
 
+	// hashBySlot maps a device channel slot index (registered via
+	// meshcore.Session.RegisterChannel) back to our own channelHash, so
+	// handleMeshcoreChannelMessage (the sync/CMD_SYNC_NEXT_MESSAGE path) can
+	// resolve which bridge(s) a synced message belongs to. Rebuilt once per
+	// RunMeshcore(session) attach; only ever touched by that goroutine, so
+	// it needs no separate lock.
+	hashBySlot map[byte]byte
+
 	sessionMu         sync.Mutex
 	meshcoreSession   *meshcore.Session
 	meshtasticSession *meshtastic.Session
@@ -205,9 +213,18 @@ func (b *Bridge) meshtasticSessionRef() *meshtastic.Session {
 // ctx is cancelled or the session closes, dispatching MeshCore channel
 // messages to Discord. The caller (cmd/hoplink) reconnects and calls this
 // again on return; it does not affect any attached Meshtastic session.
+//
+// Two independent inbound paths are consumed here: LogRxFrames (raw RF log,
+// decrypted ourselves — see handleMeshcorePacket) and ChannelMessages (the
+// device's own CMD_SYNC_NEXT_MESSAGE queue, populated after
+// registerMeshcoreChannels registers our channels on it — see
+// handleMeshcoreChannelMessage). Both funnel into the same dedup/relay
+// logic, so a message is only lost if both paths miss it.
 func (b *Bridge) RunMeshcore(ctx context.Context, session *meshcore.Session) error {
 	b.SetMeshcoreSession(session)
 	defer b.SetMeshcoreSession(nil)
+
+	b.registerMeshcoreChannels(session)
 
 	for {
 		select {
@@ -220,7 +237,41 @@ func (b *Bridge) RunMeshcore(ctx context.Context, session *meshcore.Session) err
 				return session.Err()
 			}
 			b.handleMeshcorePacket(lrx)
+		case msg, ok := <-session.ChannelMessages():
+			if !ok {
+				return session.Err()
+			}
+			b.handleMeshcoreChannelMessage(msg)
 		}
+	}
+}
+
+// registerMeshcoreChannels registers every distinct configured MeshCore
+// channel secret on session's attached device, so the device decodes and
+// queues messages on those channels for retrieval via ChannelMessages — a
+// second, independent inbound path alongside the raw log (see RunMeshcore's
+// doc comment). A registration failure (e.g. the device's channel slots are
+// all occupied by unrelated channels) is logged as a warning; that channel
+// simply keeps working via the raw log alone — not fatal.
+func (b *Bridge) registerMeshcoreChannels(session *meshcore.Session) {
+	b.hashBySlot = make(map[byte]byte)
+	registered := map[byte]bool{} // channelHash -> already registered this pass
+	for _, m := range b.byName {
+		if !m.meshcoreEnabled || registered[m.channelHash] {
+			continue
+		}
+		registered[m.channelHash] = true
+
+		name := m.cfg.MeshCore.Hashtag
+		if name == "" {
+			name = m.cfg.Name
+		}
+		slot, err := session.RegisterChannel(m.secret, name)
+		if err != nil {
+			logf("bridge %q: could not register meshcore channel for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, err)
+			continue
+		}
+		b.hashBySlot[slot] = m.channelHash
 	}
 }
 

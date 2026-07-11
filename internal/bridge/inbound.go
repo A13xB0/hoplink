@@ -10,15 +10,12 @@ import (
 )
 
 // handleMeshcorePacket is called for every RF packet the MeshCore radio
-// hears. It tries to decrypt GRP_TXT payloads against each meshcore-enabled
-// bridge's secret; a successful decrypt identifies the channel itself
-// (channelHash), not a single "owning" bridge, since multiple bridges may
-// share the same MeshCore channel (e.g. relaying one mesh channel into two
-// different Discord guilds). The message is then reposted to every such
-// bridge's Discord webhook (if it has one) and relayed to every such
-// bridge's Meshtastic channel (if it has one and isn't read-only) — each
-// distinct physical Meshtastic channel is only sent to once, even if more
-// than one sibling bridge points at it.
+// hears (the raw-log inbound path — see meshcore.Session.LogRxFrames). It
+// tries to decrypt GRP_TXT payloads against each meshcore-enabled bridge's
+// secret; a successful decrypt identifies the channel itself (channelHash),
+// not a single "owning" bridge, since multiple bridges may share the same
+// MeshCore channel (e.g. relaying one mesh channel into two different
+// Discord guilds).
 func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
@@ -47,18 +44,52 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		return
 	}
 
-	echoKey := meshcoreEchoKey(channelHash, dec.Text)
-	if b.consumeSelfEcho(echoKey) {
-		b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", dec.Text, channelHash, selfEchoTTL)
+	b.deliverMeshcoreChannelText("raw log", channelHash, dec.TimestampUnix, dec.Text)
+}
+
+// handleMeshcoreChannelMessage is called for every message retrieved via
+// the device's own CMD_SYNC_NEXT_MESSAGE queue (see
+// meshcore.Session.ChannelMessages) — a second, independent inbound path
+// alongside handleMeshcorePacket's raw-log decrypt: the device already
+// decrypted this using the secret registered (via RegisterChannel, in
+// registerMeshcoreChannels) at msg.SlotIndex. Resolves that slot back to
+// our own channelHash via hashBySlot; a slot we don't recognise (registered
+// by something else, or a stale mapping from before a reconnect) is
+// silently ignored.
+func (b *Bridge) handleMeshcoreChannelMessage(msg meshcore.ChannelMessage) {
+	channelHash, ok := b.hashBySlot[msg.SlotIndex]
+	if !ok {
 		return
 	}
-	dedupKey := meshcoreDedupKey(channelHash, dec.TimestampUnix, dec.Text)
+	b.deliverMeshcoreChannelText("sync", channelHash, msg.TimestampUnix, msg.Text)
+}
+
+// deliverMeshcoreChannelText is the shared tail for both meshcore inbound
+// paths: given a decoded (channelHash, timestampUnix, text) tuple — however
+// it was obtained — it suppresses our own echo/duplicate deliveries once,
+// then reposts to every bridge sharing that channel's Discord webhook (if
+// it has one) and relays to every such bridge's Meshtastic channel (if it
+// has one and isn't read-only) — each distinct physical Meshtastic channel
+// is only sent to once, even if more than one sibling bridge points at it.
+// Sharing this tail across both paths is what makes them naturally
+// deduplicate against each other: whichever path delivers a message first
+// wins, and the other's later delivery of the same packet is a harmless
+// dedup hit.
+func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, timestampUnix uint32, text string) {
+	echoKey := meshcoreEchoKey(channelHash, text)
+	if b.consumeSelfEcho(echoKey) {
+		b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", text, channelHash, selfEchoTTL)
+		return
+	}
+	dedupKey := meshcoreDedupKey(channelHash, timestampUnix, text)
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", dec.Text, channelHash, inboundDedupTTL)
+		b.debugf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
 		return
 	}
 
-	sender, body := splitSenderText(dec.Text)
+	sender, body := splitSenderText(text)
+	b.debugf("meshcore: received via %s on channel_hash %#x from %q: %q", source, channelHash, sender, body)
+
 	session := b.meshtasticSessionRef()
 	relayedIdx := map[uint32]bool{}
 	for _, m := range b.byName {
