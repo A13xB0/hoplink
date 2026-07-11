@@ -188,6 +188,49 @@ func TestNew_WiresPerBridgeFloodScopeOverride(t *testing.T) {
 	}
 }
 
+func TestNew_SkipsDisabledBridges(t *testing.T) {
+	falseVal := false
+	cfg := &config.Config{
+		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Discord:  config.Discord{BotToken: "abc"},
+		Limits:   config.Limits{MaxMessageBytes: 320},
+		Bridges: []config.Bridge{
+			{
+				Name:              "active",
+				DiscordChannelID:  "1",
+				DiscordWebhookURL: "https://discord.com/api/webhooks/x/y",
+				MeshCore:          config.BridgeMeshCore{Enabled: true, Hashtag: "#a"},
+			},
+			{
+				Name:    "wip",
+				Enabled: &falseVal,
+				// Deliberately incomplete: no secret source, no webhook —
+				// must never be built/validated, only skipped.
+				DiscordChannelID: "2",
+				MeshCore:         config.BridgeMeshCore{Enabled: true},
+			},
+		},
+	}
+	bot, err := discord.NewBot("fake-token", true)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	b, err := New(cfg, bot)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(b.byName) != 1 {
+		t.Fatalf("byName should only contain the enabled bridge, got %d entries", len(b.byName))
+	}
+	if b.byName[0].cfg.Name != "active" {
+		t.Errorf("byName[0].cfg.Name = %q, want %q", b.byName[0].cfg.Name, "active")
+	}
+	if _, ok := b.byChan["2"]; ok {
+		t.Error("byChan should not contain an entry for the disabled bridge's channel")
+	}
+}
+
 func TestNew_WithoutDiscord_BuildsMeshOnlyBridge(t *testing.T) {
 	cfg := &config.Config{
 		Meshcore:   config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},

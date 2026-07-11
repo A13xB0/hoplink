@@ -381,6 +381,87 @@ discord:
 	}
 }
 
+func TestBridge_IsEnabled_DefaultsTrueWhenUnset(t *testing.T) {
+	if !(Bridge{}).IsEnabled() {
+		t.Error("IsEnabled() should default to true when Enabled is unset")
+	}
+}
+
+func TestBridge_IsEnabled_ExplicitFalse(t *testing.T) {
+	falseVal := false
+	if (Bridge{Enabled: &falseVal}).IsEnabled() {
+		t.Error("IsEnabled() should be false when Enabled: false")
+	}
+}
+
+func TestBridge_IsEnabled_ExplicitTrue(t *testing.T) {
+	trueVal := true
+	if !(Bridge{Enabled: &trueVal}).IsEnabled() {
+		t.Error("IsEnabled() should be true when Enabled: true")
+	}
+}
+
+func TestLoad_DisabledBridgeSkipsContentValidation(t *testing.T) {
+	// An incomplete, not-yet-finished bridge (no secret source, no
+	// discord_webhook_url, no backend enabled at all) must not block Load
+	// as long as it's disabled.
+	cfg := `
+discord:
+  bot_token: abc
+bridges:
+  - name: wip
+    enabled: false
+    discord_channel_id: "1"
+    meshcore:
+      enabled: true
+`
+	if _, err := Load(writeTemp(t, cfg)); err != nil {
+		t.Fatalf("Load should succeed for a disabled, incomplete bridge: %v", err)
+	}
+}
+
+func TestLoad_DisabledBridgeDoesNotRequireMeshcoreHost(t *testing.T) {
+	cfg := `
+discord:
+  bot_token: abc
+bridges:
+  - name: wip
+    enabled: false
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+`
+	if _, err := Load(writeTemp(t, cfg)); err != nil {
+		t.Fatalf("Load should not require meshcore.host for a disabled bridge: %v", err)
+	}
+}
+
+func TestLoad_DisabledBridgeStillChecksNameUniqueness(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+  - name: general
+    enabled: false
+    meshcore:
+      enabled: true
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "duplicate bridge name") {
+		t.Fatalf("expected a duplicate-name error even though the second bridge is disabled, got %v", err)
+	}
+}
+
 func TestLoad_RejectsBridgeWithNeitherBackendEnabled(t *testing.T) {
 	cfg := `
 meshcore:

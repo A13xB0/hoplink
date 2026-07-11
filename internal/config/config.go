@@ -201,6 +201,12 @@ type BridgeMeshtastic struct {
 // three.
 type Bridge struct {
 	Name string `yaml:"name"`
+	// Enabled toggles this whole bridge entry on or off; nil/unset defaults
+	// to true (see IsEnabled). Set to false to keep a not-yet-finished or
+	// temporarily-unwanted bridge in the config without it being built,
+	// connected to, or validated for completeness — its meshcore/meshtastic/
+	// discord fields may be partial or missing while disabled.
+	Enabled *bool `yaml:"enabled"`
 	// DiscordChannelID and DiscordWebhookURL are optional: leave both empty
 	// for a bridge with no Discord side (a pure MeshCore<->Meshtastic relay).
 	// If either is set, both must be.
@@ -212,6 +218,12 @@ type Bridge struct {
 
 	MeshCore   BridgeMeshCore   `yaml:"meshcore"`
 	Meshtastic BridgeMeshtastic `yaml:"meshtastic"`
+}
+
+// IsEnabled reports whether this bridge is active (defaults to true when
+// Enabled is unset).
+func (b Bridge) IsEnabled() bool {
+	return b.Enabled == nil || *b.Enabled
 }
 
 // Secret resolves this bridge's 16-byte MeshCore channel secret from
@@ -267,12 +279,12 @@ func (b Bridge) ResolvedScopeKey(globalScope string) []byte {
 	return scopeKeyForName(scope)
 }
 
-// DiscordEnabled reports whether any bridge has a Discord side configured.
-// When false, hoplink runs with no Discord gateway connection at all —
-// purely relaying between MeshCore and Meshtastic.
+// DiscordEnabled reports whether any enabled bridge has a Discord side
+// configured. When false, hoplink runs with no Discord gateway connection at
+// all — purely relaying between MeshCore and Meshtastic.
 func (c *Config) DiscordEnabled() bool {
 	for _, b := range c.Bridges {
-		if strings.TrimSpace(b.DiscordChannelID) != "" {
+		if b.IsEnabled() && strings.TrimSpace(b.DiscordChannelID) != "" {
 			return true
 		}
 	}
@@ -330,6 +342,9 @@ func (c *Config) Validate() error {
 
 	anyMeshcore, anyMeshtastic, anyDiscord := false, false, false
 	for _, b := range c.Bridges {
+		if !b.IsEnabled() {
+			continue // a disabled bridge's backend toggles don't require anything to be configured
+		}
 		anyMeshcore = anyMeshcore || b.MeshCore.Enabled
 		anyMeshtastic = anyMeshtastic || b.Meshtastic.Enabled
 		anyDiscord = anyDiscord || strings.TrimSpace(b.DiscordChannelID) != ""
@@ -384,6 +399,13 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: duplicate bridge name", label))
 		}
 		seenNames[b.Name] = true
+
+		if !b.IsEnabled() {
+			// A disabled bridge may be an incomplete work-in-progress; skip
+			// every other check below so it doesn't block loading the rest
+			// of the config. It's also excluded from bridge.New entirely.
+			continue
+		}
 
 		if !b.MeshCore.Enabled && !b.Meshtastic.Enabled {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: at least one of meshcore.enabled or meshtastic.enabled must be true", label))

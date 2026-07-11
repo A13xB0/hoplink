@@ -82,6 +82,11 @@ coexistence:
 bridges:
   # A MeshCore hashtag channel: secret is derived as sha256("#name")[0:16].
   - name: general
+    # enabled: false          # optional; defaults to true. Set to false to
+                              # keep a not-yet-finished or temporarily-unwanted
+                              # bridge in this file without it being built,
+                              # connected to, or validated for completeness —
+                              # useful while you're still setting one up.
     discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID"
     discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL"
     guild_id: ""              # optional; if set, messages from any other guild are ignored (sanity check, not required for routing)

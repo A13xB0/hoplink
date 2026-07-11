@@ -127,6 +127,10 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	}
 
 	for _, bc := range cfg.Bridges {
+		if !bc.IsEnabled() {
+			logf("bridge %q: disabled, skipping", bc.Name)
+			continue
+		}
 		discordEnabled := bc.DiscordChannelID != ""
 		m := &mapping{
 			cfg:               bc,

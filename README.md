@@ -211,6 +211,7 @@ each other and want to reduce RF interference between them.
 | Field                 | Meaning                                                                          |
 |-----------------------|-------------------------------------------------------------------------------------|
 | `name`                | Unique label (used in logs)                                                          |
+| `enabled`             | Optional, defaults to `true`. Set to `false` to keep a not-yet-finished or temporarily-unwanted bridge in the config without it being built, connected to, or validated for completeness |
 | `discord_channel_id`  | Optional — the Discord channel to bridge. Leave unset (along with `discord_webhook_url`) for a bridge with no Discord side; if set, `discord_webhook_url` must be too |
 | `discord_webhook_url` | Optional — that channel's webhook (for posting under node names); required iff `discord_channel_id` is set |
 | `guild_id`            | Optional; if set, messages from any other guild are ignored (a sanity check — not needed for correct routing, since Discord channel IDs are already globally unique) |
