@@ -221,7 +221,14 @@ func (s *Session) readLoop() {
 		select {
 		case s.respCh <- frame:
 		default:
-			logf("dropped stray response frame %#x: nobody waiting", frame[0])
+			// FrameCurrTime is the keepalive's own expected reply; if it
+			// arrives after keepAliveLoop's request() already gave up
+			// waiting (a slow radio, not a bug), it lands here every cycle
+			// and isn't worth logging. Anything else arriving with nobody
+			// waiting is genuinely unexpected and worth surfacing.
+			if frame[0] != FrameCurrTime {
+				logf("dropped stray response frame %#x: nobody waiting", frame[0])
+			}
 		}
 	}
 }

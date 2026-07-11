@@ -163,6 +163,10 @@ Follow logs with `docker logs -f hoplink`. Since `config.yaml` holds your
 Discord bot token and webhook URLs, never bake it into an image or commit
 it — always mount it in at runtime.
 
+The container runs as an unprivileged user (`hoplink`, uid `10001`), not
+root. If your mounted `config.yaml` isn't world-readable, either
+`chmod 644 config.yaml` or make it group-readable by gid `10001`.
+
 ## Config reference
 
 See `config.example.yaml` for a fully annotated example. Summary:
