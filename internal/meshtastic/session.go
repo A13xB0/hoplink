@@ -25,6 +25,11 @@ const BroadcastAddr uint32 = 0xFFFFFFFF
 // handshake to complete (my_info/node_info/channel dump + config_complete_id).
 const DefaultCommandTimeout = 10 * time.Second
 
+// keepAliveInterval is how often Session writes a harmless keepalive
+// sequence when otherwise idle. A var (not const) so tests can shorten it
+// rather than waiting out the real interval.
+var keepAliveInterval = 60 * time.Second
+
 // wellKnownPrimaryNames are names that should resolve to the device's
 // primary channel (index 0) even if that slot's own stored Settings.Name is
 // empty — which it commonly is, since primary channels are usually
@@ -101,6 +106,7 @@ func Dial(addr string) (*Session, error) {
 	}
 
 	go s.readLoop()
+	go s.keepAliveLoop()
 	return s, nil
 }
 
@@ -118,6 +124,34 @@ func (s *Session) writeToRadio(msg *generated.ToRadio) error {
 	defer s.writeMu.Unlock()
 	_, err = s.conn.Write(frame)
 	return err
+}
+
+// keepAliveLoop periodically writes the same harmless wake/padding sequence
+// used to wake a sleeping device on connect (wakeSequence — unframed bytes
+// that any correctly-implemented frameReader, ours included, silently skips
+// while resyncing on the real start1/start2 marker), so this TCP connection
+// sees regular traffic even on a quiet mesh channel. Companion connections
+// routinely get dropped by NAT/router idle-connection timeouts when no
+// traffic flows for a while; comfortably undercutting that keeps the
+// mapping alive. Write failures are logged only: readLoop will observe the
+// same dead connection and close Session, which the caller (bridge/main)
+// reconnects.
+func (s *Session) keepAliveLoop() {
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.writeMu.Lock()
+			_, err := s.conn.Write(wakeSequence())
+			s.writeMu.Unlock()
+			if err != nil {
+				logf("keepalive write failed: %v", err)
+			}
+		case <-s.closed:
+			return
+		}
+	}
 }
 
 // handshake sends want_config and synchronously collects my_info,

@@ -1,6 +1,7 @@
 package meshtastic
 
 import (
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -377,5 +378,79 @@ func TestDial_FailsPromptlyIfConnectionDropsMidHandshake(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Dial did not notice the dropped connection promptly")
+	}
+}
+
+func TestSession_KeepAliveLoop_WritesPeriodicWakeBytes(t *testing.T) {
+	orig := keepAliveInterval
+	keepAliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = orig })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		// Perform the handshake by hand (rather than via fakeRadio, whose
+		// own readFrame loop would otherwise compete with this test for
+		// bytes off the same conn afterwards).
+		fr := newFrameReader(conn)
+		frame, err := fr.readFrame()
+		if err != nil {
+			return
+		}
+		var toRadio generated.ToRadio
+		if err := proto.Unmarshal(frame, &toRadio); err != nil {
+			return
+		}
+		w, ok := toRadio.PayloadVariant.(*generated.ToRadio_WantConfigId)
+		if !ok {
+			return
+		}
+		for _, reply := range standardHandshakeReplies(w.WantConfigId) {
+			data, err := proto.Marshal(reply)
+			if err != nil {
+				return
+			}
+			f, err := encodeFrame(data)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(f); err != nil {
+				return
+			}
+		}
+		connCh <- conn
+	}()
+
+	s, err := Dial(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var conn net.Conn
+	select {
+	case conn = <-connCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handshake did not complete")
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, wakeByteCount)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("expected a keepalive wake sequence to arrive, got: %v", err)
+	}
+	for i, b := range buf {
+		if b != start2 {
+			t.Fatalf("keepalive byte[%d] = %#x, want %#x (start2)", i, b, start2)
+		}
 	}
 }

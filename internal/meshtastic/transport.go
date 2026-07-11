@@ -106,7 +106,10 @@ func encodeFrame(data []byte) ([]byte, error) {
 	return out, nil
 }
 
-// wakeSequence is written once after connecting to wake a sleeping device.
+// wakeSequence is written once after connecting to wake a sleeping device,
+// and again periodically thereafter by Session.keepAliveLoop as harmless
+// keepalive padding: any correctly-implemented frameReader (ours included)
+// safely skips these bytes while resyncing on the real start1/start2 marker.
 func wakeSequence() []byte {
 	buf := make([]byte, wakeByteCount)
 	for i := range buf {
