@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -131,16 +130,11 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 // postToWebhook reposts body to m's Discord webhook under displaySender
 // (which may carry a sender_format origin tag), with an avatar generated
 // from rawSender (the untagged name, so a person's avatar stays stable
-// regardless of sender_format).
+// regardless of sender_format). Delivery is ordered and rate-limit-aware
+// (see discord.WebhookSender.Enqueue) — this call itself never blocks.
 func (b *Bridge) postToWebhook(m *mapping, rawSender, displaySender, body string) {
 	avatarURL := avatarURLForName(rawSender)
-	go func(m *mapping, displaySender, avatarURL, body string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := m.webhook.Send(ctx, displaySender, avatarURL, body); err != nil {
-			logf("posting to Discord webhook for %q: %v", m.cfg.Name, err)
-		}
-	}(m, displaySender, avatarURL, body)
+	m.webhook.Enqueue(displaySender, avatarURL, body)
 }
 
 // splitSenderText splits a MeshCore channel plaintext ("Name: message") into

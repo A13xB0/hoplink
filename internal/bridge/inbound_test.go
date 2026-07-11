@@ -51,7 +51,7 @@ func newTestMapping(t *testing.T, name, hashtag string) (*mapping, chan webhookP
 		cfg:             bc,
 		secret:          secret,
 		channelHash:     chHash,
-		webhook:         discord.NewWebhookSender(server.URL + "/api/webhooks/1/tok"),
+		webhook:         discord.NewWebhookSender(server.URL+"/api/webhooks/1/tok", "test"),
 		discordEnabled:  true,
 		maxBytes:        320,
 		meshcoreEnabled: true,

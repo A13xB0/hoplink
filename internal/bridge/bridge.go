@@ -141,7 +141,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 			meshtasticEnabled: bc.Meshtastic.Enabled,
 		}
 		if discordEnabled {
-			m.webhook = discord.NewWebhookSender(bc.DiscordWebhookURL)
+			m.webhook = discord.NewWebhookSender(bc.DiscordWebhookURL, bc.Name)
 		}
 		if bc.MeshCore.Enabled {
 			secret, err := bc.Secret()
