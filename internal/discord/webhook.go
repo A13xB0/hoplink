@@ -50,9 +50,23 @@ func webhookIDFromURL(url string) string {
 }
 
 type webhookPayload struct {
-	Content   string `json:"content"`
-	Username  string `json:"username,omitempty"`
-	AvatarURL string `json:"avatar_url,omitempty"`
+	Content         string          `json:"content"`
+	Username        string          `json:"username,omitempty"`
+	AvatarURL       string          `json:"avatar_url,omitempty"`
+	AllowedMentions allowedMentions `json:"allowed_mentions"`
+}
+
+// allowedMentions is always sent with an empty Parse list. Relayed content
+// originates from Discord users, mesh node names, or (via sibling-bridge
+// relay) another Discord channel entirely — none of which should be able to
+// ping @everyone, @here, a role, or an arbitrary user just by typing or
+// naming themselves that. Discord webhooks honor those mentions by default
+// unless explicitly suppressed.
+type allowedMentions struct {
+	// Parse must be a non-nil empty slice (marshals to "[]", not "null") —
+	// an absent/null allowed_mentions falls back to Discord's default
+	// (everything pings).
+	Parse []string `json:"parse"`
 }
 
 // maxDiscordContentLen is Discord's hard limit on a single message body.
@@ -60,13 +74,20 @@ const maxDiscordContentLen = 2000
 
 // Send posts content to this channel's webhook under username, with an
 // optional avatarURL override (pass "" to use the webhook's own default
-// avatar). Errors on a non-2xx response include the response body for
+// avatar). @everyone/@here/role/user mentions in content are always
+// suppressed (see allowedMentions) — they show up as inert plain text, never
+// as a real ping. Errors on a non-2xx response include the response body for
 // diagnosability.
 func (w *WebhookSender) Send(ctx context.Context, username, avatarURL, content string) error {
 	if len(content) > maxDiscordContentLen {
 		content = content[:maxDiscordContentLen]
 	}
-	body, err := json.Marshal(webhookPayload{Content: content, Username: username, AvatarURL: avatarURL})
+	body, err := json.Marshal(webhookPayload{
+		Content:         content,
+		Username:        username,
+		AvatarURL:       avatarURL,
+		AllowedMentions: allowedMentions{Parse: []string{}},
+	})
 	if err != nil {
 		return fmt.Errorf("discord: marshalling webhook payload: %w", err)
 	}

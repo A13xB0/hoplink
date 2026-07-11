@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,39 @@ func TestWebhookSender_Send(t *testing.T) {
 	}
 	if sender.ID() != "1" {
 		t.Errorf("ID() = %q, want %q", sender.ID(), "1")
+	}
+}
+
+func TestWebhookSender_Send_SuppressesMentions(t *testing.T) {
+	var rawBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		rawBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sender := NewWebhookSender(server.URL + "/api/webhooks/1/tok")
+	if err := sender.Send(context.Background(), "Alice", "", "@everyone @here <@&123> <@456> hi"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if !strings.Contains(string(rawBody), `"allowed_mentions":{"parse":[]}`) {
+		t.Errorf("expected an empty allowed_mentions.parse to suppress all mentions, got body: %s", rawBody)
+	}
+
+	var gotBody webhookPayload
+	if err := json.Unmarshal(rawBody, &gotBody); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if gotBody.AllowedMentions.Parse == nil {
+		t.Error("AllowedMentions.Parse must be a non-nil empty slice, not nil/omitted")
+	}
+	if len(gotBody.AllowedMentions.Parse) != 0 {
+		t.Errorf("AllowedMentions.Parse = %v, want empty", gotBody.AllowedMentions.Parse)
 	}
 }
 

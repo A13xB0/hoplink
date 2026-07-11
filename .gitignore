@@ -16,3 +16,6 @@ config.yaml
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code local state
+.claude/
