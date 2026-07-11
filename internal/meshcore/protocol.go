@@ -57,6 +57,9 @@ const (
 	PushTelemetryResponse = 0x8B
 	PushBinaryResponse    = 0x8C
 	PushPathDiscoveryResp = 0x8D
+	PushControlData       = 0x8E // PUSH_CODE_CONTROL_DATA (firmware v8+)
+	PushContactDeleted    = 0x8F
+	PushContactsFull      = 0x90
 )
 
 // ErrCode values carried in byte 1 of a FrameErr (0x01) response.

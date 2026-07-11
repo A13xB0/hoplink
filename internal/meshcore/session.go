@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,13 +88,20 @@ type Session struct {
 	conn net.Conn
 	fr   *FrameReader
 
-	cmdMu    sync.Mutex // serialises whole request/response cycles (write + wait) across all callers, including the keepalive loop
-	writeCh  chan writeReq
-	respCh   chan []byte
-	logRxCh  chan LogRxData
-	pushCh   chan []byte
-	closed   chan struct{}
-	closeErr error
+	cmdMu   sync.Mutex // serialises whole request/response cycles (write + wait) across all callers, including the keepalive loop
+	writeCh chan writeReq
+	respCh  chan []byte
+	logRxCh chan LogRxData
+	pushCh  chan []byte
+	// pushConsumed tracks whether PushFrames has ever been called. Nobody in
+	// this codebase currently calls it — it exists for callers that need
+	// push codes LogRxFrames doesn't decode (e.g. PUSH_CODE_SEND_CONFIRMED)
+	// — so writing to (and logging drops for) pushCh before anyone has ever
+	// asked for it would just be constant, misleading noise: a channel with
+	// zero consumers is *always* "full", not evidence anything real was lost.
+	pushConsumed atomic.Bool
+	closed       chan struct{}
+	closeErr     error
 }
 
 type writeReq struct {
@@ -211,10 +219,12 @@ func (s *Session) readLoop() {
 					}
 				}
 			}
-			select {
-			case s.pushCh <- frame:
-			default:
-				logf("dropped push frame %#x: nobody listening", frame[0])
+			if s.pushConsumed.Load() {
+				select {
+				case s.pushCh <- frame:
+				default:
+					logf("dropped push frame %#x: nobody listening", frame[0])
+				}
 			}
 			continue
 		}
@@ -382,8 +392,11 @@ func (s *Session) LogRxFrames() <-chan LogRxData {
 
 // PushFrames returns a channel of all raw push frames (first byte >= 0x80),
 // including ones LogRxFrames already decodes, for callers that need e.g.
-// PUSH_CODE_SEND_CONFIRMED (0x82) or PUSH_CODE_MSG_WAITING (0x83).
+// PUSH_CODE_SEND_CONFIRMED (0x82) or PUSH_CODE_MSG_WAITING (0x83). Frames
+// are only forwarded here (and drops only logged) once this method has been
+// called at least once — see pushConsumed.
 func (s *Session) PushFrames() <-chan []byte {
+	s.pushConsumed.Store(true)
 	return s.pushCh
 }
 

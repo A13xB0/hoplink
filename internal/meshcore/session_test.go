@@ -1,8 +1,11 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/binary"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -294,18 +297,103 @@ func TestSession_PushFrames_DeliversRawUndecodedPush(t *testing.T) {
 		return nil
 	})
 
+	// PushFrames must be called before the frame arrives: frames are only
+	// forwarded (and drops only logged) once something has actually asked
+	// for them (see Session.pushConsumed).
+	frames := s.PushFrames()
+
 	confirmFrame := []byte{PushAck, 1, 2, 3, 4}
 	if err := radio.Push(confirmFrame); err != nil {
 		t.Fatalf("radio.Push: %v", err)
 	}
 
 	select {
-	case got := <-s.PushFrames():
+	case got := <-frames:
 		if got[0] != PushAck {
 			t.Errorf("push frame[0] = %#x, want %#x", got[0], PushAck)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for PushFrames delivery")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent Write/String — needed
+// because logf may be called from a Session's background goroutines
+// (readLoop et al.) while the test's own goroutine reads the captured
+// output, which a plain bytes.Buffer doesn't support.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLog redirects the standard logger's output to a buffer for the
+// duration of the test, restoring it on cleanup.
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	orig := log.Writer()
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	return buf
+}
+
+func TestSession_PushFrames_NoSpamBeforeEverConsumed(t *testing.T) {
+	_, _, radio := dialOverPipe(t, func(frame []byte) []byte {
+		if frame[0] == CmdAppStart {
+			return selfInfoFrame("Node")
+		}
+		return nil
+	})
+	buf := captureLog(t)
+
+	// Nobody has ever called PushFrames: pushing far more than pushCh's
+	// buffer size must not log any "dropped push frame" spam, since a
+	// channel nobody has asked for isn't meaningfully "full".
+	for i := 0; i < 40; i++ {
+		if err := radio.Push([]byte{PushAck, byte(i)}); err != nil {
+			t.Fatalf("radio.Push: %v", err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if strings.Contains(buf.String(), "dropped push frame") {
+		t.Errorf("expected no drop-spam before PushFrames was ever called, got: %s", buf.String())
+	}
+}
+
+func TestSession_PushFrames_LogsDropsOnceConsumed(t *testing.T) {
+	s, _, radio := dialOverPipe(t, func(frame []byte) []byte {
+		if frame[0] == CmdAppStart {
+			return selfInfoFrame("Node")
+		}
+		return nil
+	})
+	_ = s.PushFrames() // register interest, but never drain it below
+	buf := captureLog(t)
+
+	// Now that something has asked for pushCh, filling past its buffer
+	// should log drops as before.
+	for i := 0; i < 40; i++ {
+		if err := radio.Push([]byte{PushAck, byte(i)}); err != nil {
+			t.Fatalf("radio.Push: %v", err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if !strings.Contains(buf.String(), "dropped push frame") {
+		t.Errorf("expected drop logging once PushFrames had been consumed, got: %s", buf.String())
 	}
 }
 
