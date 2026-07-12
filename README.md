@@ -349,7 +349,7 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `route`           | `flood`    | `flood` \| `direct`                                                                   |
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
-| `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "Reliable receiving" below); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
+| `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "MeshCore: two independent receive paths" above); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
 | `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within a few seconds of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on |
 
 ### `meshtastic:` (top-level)
@@ -403,7 +403,7 @@ each other and want to reduce RF interference between them.
 | `meshcore.enabled`    | Turn on the MeshCore side of this bridge                                             |
 | `meshcore.hashtag`    | A hashtag channel name (secret derived from it) — exactly one of `hashtag`/`secret_hex`/`public` |
 | `meshcore.secret_hex` | An explicit 32-hex-char (16-byte) private channel secret                             |
-| `meshcore.public`     | Use MeshCore's well-known default public channel — always registered at the device's fixed public slot (index 0) for device-side sync, unlike `hashtag`/`secret_hex` channels (see "Reliable receiving" above) |
+| `meshcore.public`     | Use MeshCore's well-known default public channel — always registered at the device's fixed public slot (index 0) for device-side sync, unlike `hashtag`/`secret_hex` channels (see "MeshCore: two independent receive paths" above) |
 | `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
 | `meshcore.rx_scopes`  | Optional per-bridge override of the top-level `meshcore.rx_scopes`; empty/unset = use the global default |
 | `meshcore.read_only`  | Optional, defaults to `false`. If `true`, this side only ever receives from MeshCore, never transmits |
