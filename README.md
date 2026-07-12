@@ -46,6 +46,85 @@ no Discord channel involved at all.
   or temporarily-unwanted entry in the config without it being built,
   connected to, or validated for completeness.
 
+## Contents
+
+- [Screenshots](#screenshots)
+- [Quickstart](#quickstart)
+- [How the two protocols differ here](#how-the-two-protocols-differ-here)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Running](#running)
+- [Running with Docker](#running-with-docker)
+- [Config reference](#config-reference)
+- [Testing](#testing)
+- [License](#license)
+
+## Screenshots
+
+The same conversation, on the same `LongFast`/`#longfast` channel, seen from
+all three sides — with `sender_format: short` tagging each message's origin
+as it crosses onto the other two surfaces:
+
+<table>
+<tr>
+<td align="center" width="33%">
+<img src="assets/screenshots/Discord.jpeg" alt="Discord view of a bridged conversation, with MeshCore and Meshtastic senders tagged (MC)/(MT)" width="260">
+<br><sub><b>Discord</b> — MeshCore/Meshtastic senders tagged <code>(MC)</code>/<code>(MT)</code></sub>
+</td>
+<td align="center" width="33%">
+<img src="assets/screenshots/Meshcore.jpeg" alt="MeshCore companion app view of the same conversation, with Discord senders tagged (DC)" width="260">
+<br><sub><b>MeshCore</b> app — Discord/Meshtastic senders tagged <code>(DC)</code>/<code>(MT)</code></sub>
+</td>
+<td align="center" width="33%">
+<img src="assets/screenshots/Meshtastic.jpeg" alt="Meshtastic device screen showing the same conversation, with a MeshCore sender tagged (MC)" width="260">
+<br><sub><b>Meshtastic</b> device — a MeshCore sender tagged <code>(MC)</code></sub>
+</td>
+</tr>
+</table>
+
+## Quickstart
+
+The fastest path to one working bridge — a MeshCore hashtag channel relayed
+to a Discord channel. See [Setup](#setup) below for the full walkthrough
+(Meshtastic-only or Discord-less bridges, sibling bridges, etc.) and
+[Config reference](#config-reference) for every field.
+
+1. Clone and copy the example config:
+
+   ```sh
+   git clone https://github.com/A13xB0/hoplink.git
+   cd hoplink
+   cp config.example.yaml config.yaml
+   ```
+
+2. Point `meshcore.host` in `config.yaml` at your companion radio's IP
+   (default port `5000`).
+
+3. **Only if you want this bridge on Discord** — skip straight to step 4 for
+   a Discord-less MeshCore↔Meshtastic relay instead:
+   - Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications) →
+     **Bot** tab → Reset Token → paste into `discord.bot_token`, and enable
+     **Message Content Intent** on that same tab.
+   - **OAuth2 → URL Generator** → `bot` scope, with **Read Messages/View
+     Channels** and **Read Message History** permissions → open the
+     generated URL and invite the bot to your server.
+   - In the target channel: **Integrations → Webhooks → New Webhook** →
+     copy the URL into `discord_webhook_url` under `bridges:`.
+
+4. Edit the first entry under `bridges:` in `config.yaml` (`name: general`)
+   with your channel details, and delete the commented-out example bridges
+   you don't need.
+
+5. Run it:
+
+   ```sh
+   go run ./cmd/hoplink --config config.yaml
+   ```
+
+Send something on the mesh — it should show up in Discord (and vice versa).
+See [Running with Docker](#running-with-docker) for a containerized setup
+instead.
+
 ## How the two protocols differ here
 
 - **MeshCore**: messages are sent as fully hand-composed raw RF packets
