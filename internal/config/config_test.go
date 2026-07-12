@@ -125,9 +125,6 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	if cfg.Meshcore.AppName != "hoplink" {
 		t.Errorf("AppName = %q, want hoplink", cfg.Meshcore.AppName)
 	}
-	if cfg.Meshcore.Route != "flood" {
-		t.Errorf("Route = %q, want flood", cfg.Meshcore.Route)
-	}
 	if cfg.Meshcore.Addr() != "192.168.4.1:5000" {
 		t.Errorf("Addr = %q, want 192.168.4.1:5000", cfg.Meshcore.Addr())
 	}
@@ -184,11 +181,29 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsBadRoute(t *testing.T) {
-	cfg := configWithMeshcore("  route: sideways")
+func TestLoad_RejectsDuplicateDiscordChannelID(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+  - name: other
+    discord_channel_id: "1"
+    discord_webhook_url: "https://y"
+    meshcore:
+      enabled: true
+      hashtag: "#other"
+`
 	_, err := Load(writeTemp(t, cfg))
-	if err == nil || !strings.Contains(err.Error(), "route") {
-		t.Fatalf("expected a route error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicate discord_channel_id") {
+		t.Fatalf("expected duplicate-channel-id error, got %v", err)
 	}
 }
 

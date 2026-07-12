@@ -346,7 +346,6 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `host`            | —          | Companion radio's IP                                                                |
 | `port`            | `5000`     | Companion TCP port                                                                    |
 | `app_name`        | `hoplink` | Identifies this client during the `CMD_APP_START` handshake                          |
-| `route`           | `flood`    | `flood` \| `direct`                                                                   |
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 | `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "MeshCore: two independent receive paths" above); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |

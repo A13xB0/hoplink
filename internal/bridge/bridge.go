@@ -75,7 +75,6 @@ type notifier interface {
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
 	notify          notifier
-	route           meshcore.RfRouteType
 	hashSize        int // path hash bytes/hop for our outgoing MeshCore packets (1-3)
 	debug           bool
 	retryOnNoRepeat bool // meshcore.retry_on_no_repeat — see repeatRetryWait/maxRepeatRetries
@@ -106,6 +105,11 @@ type Bridge struct {
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
 	recentOutbound map[string]time.Time
+	// mtWarnedChan tracks meshtastic channel_names we've already warned about
+	// being absent from the attached device, so a genuinely-misconfigured
+	// bridge is surfaced once rather than on every inbound message. Guarded by
+	// mu. Keyed by channel_name (the config value that failed to resolve).
+	mtWarnedChan map[string]bool
 }
 
 // withTxGuard runs send while holding the shared TX lock (if
@@ -133,13 +137,7 @@ func (b *Bridge) withTxGuard(send func() error) error {
 // RunMeshcore/RunMeshtastic (each may be called repeatedly across
 // reconnects; the caller, cmd/hoplink, owns that lifecycle).
 func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
-	route, err := cfg.Meshcore.RouteType()
-	if err != nil {
-		return nil, err
-	}
-
 	b := &Bridge{
-		route:           route,
 		hashSize:        cfg.Meshcore.PathHashBytes,
 		debug:           cfg.Debug,
 		retryOnNoRepeat: cfg.Meshcore.RetryOnNoRepeat,
@@ -148,6 +146,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		byChan:          make(map[string]*mapping),
 		recentInbound:   make(map[string]time.Time),
 		recentOutbound:  make(map[string]time.Time),
+		mtWarnedChan:    make(map[string]bool),
 	}
 
 	for _, bc := range cfg.Bridges {

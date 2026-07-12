@@ -72,7 +72,7 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 // the same MeshCore hashtag channel into two different Discord guilds. This
 // is a same-process software relay: it doesn't depend on the message
 // actually being heard back over RF (which may never happen — no repeater
-// in range, route: direct, etc.), so it's immediate and reliable, and it
+// in range, a small mesh with no repeater, etc.), so it's immediate and reliable, and it
 // never triggers an additional mesh-side transmission beyond what m's own
 // enabled backends already send above.
 func (b *Bridge) relayDiscordToSiblings(m *mapping, rawSender, content string) {
@@ -115,7 +115,7 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, attempt int) {
 	echoKey := meshcoreEchoKey(m.channelHash, chunk)
 	b.markOutboundSent(echoKey)
 	err := b.withTxGuard(func() error {
-		return session.SendChannelMessage(m.secret, b.route, b.hashSize, m.scopeKey, chunk)
+		return session.SendChannelMessage(m.secret, b.hashSize, m.scopeKey, chunk)
 	})
 	if err != nil {
 		logf("sending to meshcore channel %q: %v", m.cfg.Name, err)

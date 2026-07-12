@@ -60,7 +60,6 @@ type Meshcore struct {
 	Host          string `yaml:"host"`
 	Port          int    `yaml:"port"`
 	AppName       string `yaml:"app_name"`
-	Route         string `yaml:"route"`           // "flood" or "direct"
 	PathHashBytes int    `yaml:"path_hash_bytes"` // 2 or 3 — bytes/hop for path tracking on our outgoing packets; 1-byte hashes are not allowed
 	FloodScope    string `yaml:"flood_scope"`     // optional named flood scope/region; empty = unscoped ROUTE_TYPE_FLOOD
 	// RxScopes optionally restricts which flood-scoped raw-log packets are
@@ -84,18 +83,6 @@ type Meshcore struct {
 // Addr returns "host:port" for net.Dial.
 func (m Meshcore) Addr() string {
 	return fmt.Sprintf("%s:%d", m.Host, m.Port)
-}
-
-// RouteType maps the configured route string to a meshcore.RfRouteType.
-func (m Meshcore) RouteType() (meshcore.RfRouteType, error) {
-	switch m.Route {
-	case "flood", "":
-		return meshcore.RouteFlood, nil
-	case "direct":
-		return meshcore.RouteDirect, nil
-	default:
-		return 0, fmt.Errorf("config: meshcore.route must be \"flood\" or \"direct\", got %q", m.Route)
-	}
 }
 
 // ScopeKey resolves the 16-byte flood-scope key for FloodScope, or nil when
@@ -371,9 +358,6 @@ func (c *Config) applyDefaults() {
 	if c.Meshcore.AppName == "" {
 		c.Meshcore.AppName = "hoplink"
 	}
-	if c.Meshcore.Route == "" {
-		c.Meshcore.Route = "flood"
-	}
 	if c.Meshcore.PathHashBytes == 0 {
 		c.Meshcore.PathHashBytes = 3
 	}
@@ -410,9 +394,6 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Meshcore.Host) == "" {
 			errs = append(errs, "meshcore.host is required because at least one bridge has meshcore.enabled: true")
 		}
-		if _, err := c.Meshcore.RouteType(); err != nil {
-			errs = append(errs, err.Error())
-		}
 		// 1-byte path hashes are deliberately excluded: they're the protocol's
 		// legacy default but collide far more often on larger meshes, so this
 		// bridge always relays with 2- or 3-byte hop hashes.
@@ -444,6 +425,7 @@ func (c *Config) Validate() error {
 	}
 
 	seenNames := map[string]bool{}
+	seenChannelIDs := map[string]bool{}
 	for i, b := range c.Bridges {
 		label := b.Name
 		if label == "" {
@@ -501,6 +483,18 @@ func (c *Config) Validate() error {
 		hasWebhook := strings.TrimSpace(b.DiscordWebhookURL) != ""
 		if hasChannel != hasWebhook {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: discord_channel_id and discord_webhook_url must both be set, or both left empty (empty means this bridge has no Discord side)", label))
+		}
+		// Two bridges sharing a discord_channel_id can't both work: inbound
+		// Discord routing is keyed by channel ID (see bridge.New's byChan), so
+		// the second silently wins and the first's Discord->mesh direction goes
+		// dead. Siblings are meant to share a *mesh* channel across *different*
+		// Discord channels, never the same Discord channel.
+		if hasChannel {
+			id := strings.TrimSpace(b.DiscordChannelID)
+			if seenChannelIDs[id] {
+				errs = append(errs, fmt.Sprintf("bridges[%s]: duplicate discord_channel_id %q (each Discord channel may be bridged by at most one bridge)", label, id))
+			}
+			seenChannelIDs[id] = true
 		}
 		if !hasChannel && !(b.MeshCore.Enabled && b.Meshtastic.Enabled) {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: a bridge with no Discord side must have both meshcore.enabled and meshtastic.enabled set (otherwise it has nothing to relay between)", label))

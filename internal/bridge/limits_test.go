@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/hectospark/hoplink/internal/discord"
-	"github.com/hectospark/hoplink/internal/meshcore"
 )
 
 // fakeNotifier substitutes for *discord.Bot in tests, capturing Reply calls
@@ -45,7 +44,6 @@ func TestBridge_HandleDiscordMessage_RejectsOversizedMessageAndNotifies(t *testi
 	notify := newFakeNotifier()
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.notify = notify
 
 	b.handleDiscordMessage(discord.IncomingMessage{
@@ -77,7 +75,6 @@ func TestBridge_HandleDiscordMessage_AllowsMessageAtExactLimit(t *testing.T) {
 	m.maxBytes = len("Alice: hi")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  m.cfg.DiscordChannelID,

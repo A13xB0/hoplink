@@ -113,7 +113,7 @@ func TestBridge_WithTxGuard_PropagatesSendError(t *testing.T) {
 
 func TestNew_WiresDebugFromConfig(t *testing.T) {
 	cfg := &config.Config{
-		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshcore: config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3},
 		Discord:  config.Discord{BotToken: "abc"},
 		Limits:   config.Limits{MaxMessageBytes: 320},
 		Debug:    true,
@@ -141,7 +141,7 @@ func TestNew_WiresDebugFromConfig(t *testing.T) {
 func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
 	falseVal := false
 	cfg := &config.Config{
-		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshcore: config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3},
 		Discord:  config.Discord{BotToken: "abc"},
 		Limits:   config.Limits{MaxMessageBytes: 320},
 		Coexistence: config.Coexistence{
@@ -174,7 +174,7 @@ func TestNew_WiresCoexistenceFromConfig(t *testing.T) {
 
 func TestNew_WiresPerBridgeFloodScopeOverride(t *testing.T) {
 	cfg := &config.Config{
-		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3, FloodScope: "globalregion"},
+		Meshcore: config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3, FloodScope: "globalregion"},
 		Discord:  config.Discord{BotToken: "abc"},
 		Limits:   config.Limits{MaxMessageBytes: 320},
 		Bridges: []config.Bridge{
@@ -218,7 +218,7 @@ func TestNew_WiresPerBridgeFloodScopeOverride(t *testing.T) {
 func TestNew_SkipsDisabledBridges(t *testing.T) {
 	falseVal := false
 	cfg := &config.Config{
-		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshcore: config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3},
 		Discord:  config.Discord{BotToken: "abc"},
 		Limits:   config.Limits{MaxMessageBytes: 320},
 		Bridges: []config.Bridge{
@@ -260,7 +260,7 @@ func TestNew_SkipsDisabledBridges(t *testing.T) {
 
 func TestNew_WithoutDiscord_BuildsMeshOnlyBridge(t *testing.T) {
 	cfg := &config.Config{
-		Meshcore:   config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshcore:   config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3},
 		Meshtastic: config.Meshtastic{Host: "5.6.7.8"},
 		Limits:     config.Limits{MaxMessageBytes: 320},
 		Bridges: []config.Bridge{{
@@ -294,7 +294,7 @@ func TestNew_WithoutDiscord_BuildsMeshOnlyBridge(t *testing.T) {
 
 func TestNew_CoexistenceDefaultsToEnabled(t *testing.T) {
 	cfg := &config.Config{
-		Meshcore: config.Meshcore{Host: "1.2.3.4", Route: "flood", PathHashBytes: 3},
+		Meshcore: config.Meshcore{Host: "1.2.3.4", PathHashBytes: 3},
 		Discord:  config.Discord{BotToken: "abc"},
 		Limits:   config.Limits{MaxMessageBytes: 320},
 		Coexistence: config.Coexistence{

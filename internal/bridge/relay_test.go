@@ -133,7 +133,6 @@ func TestBridge_HandleMeshtasticMessage_RelaysToMeshcoreWhenBothEnabled(t *testi
 	m, posts := newDualBackendMapping(t, "none")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(mcSession)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	mtSession, _, radio := dialTestMeshtasticSession(t)

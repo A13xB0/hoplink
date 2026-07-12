@@ -39,7 +39,6 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
   host: 192.168.4.1   # your companion radio's IP (its built-in WiFi/TCP server)
   port: 5000          # default MeshCore companion TCP port
   app_name: hoplink  # identifies this client to the radio during APP_START
-  route: flood        # flood | direct — flood is correct for hashtag/group chat
   path_hash_bytes: 3  # 2 | 3 — bytes/hop for path tracking on our outgoing
                       # packets; repeaters read this straight off our packet
                       # header as they relay it, so this is the one place

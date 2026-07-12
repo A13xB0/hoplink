@@ -154,7 +154,6 @@ func TestBridge_HandleMeshtasticMessage_RelaysToMeshcoreOncePerSharedChannel(t *
 	b := newTestBridge(m1, m2)
 	b.SetMeshtasticSession(mtSession)
 	b.SetMeshcoreSession(mcSession)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
@@ -189,7 +188,6 @@ func TestBridge_HandleDiscordMessage_RelaysToSiblingSharingMeshcoreChannel(t *te
 	session, _ := dialTestSession(t)
 	b := newTestBridge(m1, m2)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{
@@ -237,7 +235,6 @@ func TestBridge_HandleDiscordMessage_DoesNotRelayToUnrelatedBridge(t *testing.T)
 	session, _ := dialTestSession(t)
 	b := newTestBridge(m1, m3)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{
@@ -262,7 +259,6 @@ func TestBridge_SendMeshcore_ReadOnlySkipsTransmit(t *testing.T) {
 	session, sentPackets := dialTestSession(t)
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.sendMeshcore(m, "Alice", "hi")
@@ -297,7 +293,6 @@ func TestBridge_HandleDiscordMessage_DiscordReadOnlySkipsAllOutbound(t *testing.
 	session, sentPackets := dialTestSession(t)
 	b := newTestBridge(m1, m2)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{

@@ -363,7 +363,9 @@ func (s *Session) SendRawPacket(packet []byte, priority byte) error {
 }
 
 // SendChannelMessage is a convenience wrapper: derives the RF packet for a
-// GRP_TXT channel message and sends it via SendRawPacket.
+// GRP_TXT channel message and sends it via SendRawPacket. Channel messages
+// are always flooded (ROUTE_TYPE_FLOOD) — the only route type hoplink uses,
+// since group/hashtag traffic has no single destination to route toward.
 //
 // hashSize sets the path hash width (1-3 bytes/hop) that relays will use
 // when they extend this packet's path while flooding it — repeaters read it
@@ -374,17 +376,17 @@ func (s *Session) SendRawPacket(packet []byte, priority byte) error {
 // (hopCount 0): the encoded hash-size bits still travel with the packet.
 //
 // scopeKey16, when non-nil, scopes the packet to a named flood
-// scope/region: the route is upgraded to its TRANSPORT_* variant and
+// scope/region: the route is upgraded to ROUTE_TYPE_TRANSPORT_FLOOD and
 // transport_codes[0] is set via CalcTransportCode. Pass nil for the
-// legacy unscoped behaviour (plain ROUTE_TYPE_FLOOD/_DIRECT).
-func (s *Session) SendChannelMessage(secret16 []byte, route RfRouteType, hashSize int, scopeKey16 []byte, text string) error {
+// legacy unscoped behaviour (plain ROUTE_TYPE_FLOOD).
+func (s *Session) SendChannelMessage(secret16 []byte, hashSize int, scopeKey16 []byte, text string) error {
 	payload, err := BuildGroupTextPayload(secret16, uint32(time.Now().Unix()), 0, text)
 	if err != nil {
 		return err
 	}
 
 	pkt := Packet{
-		Route:       route,
+		Route:       RouteFlood,
 		PayloadType: PayloadTypeGrpTxt,
 		Version:     PayloadVer1,
 		HashSize:    hashSize,
@@ -395,7 +397,7 @@ func (s *Session) SendChannelMessage(secret16 []byte, route RfRouteType, hashSiz
 		if err != nil {
 			return err
 		}
-		pkt.Route = route.WithTransportCodes()
+		pkt.Route = RouteFlood.WithTransportCodes()
 		pkt.TransportCodes = EncodeTransportCodes(code0, 0)
 	}
 

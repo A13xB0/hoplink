@@ -372,7 +372,6 @@ func TestBridge_HandleDiscordMessage_DualBackendSendsToBoth(t *testing.T) {
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(mcSession)
 	b.SetMeshtasticSession(mtSession)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{

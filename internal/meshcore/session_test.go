@@ -132,7 +132,7 @@ func TestSession_SendChannelMessage_EncodesRequestedHashSize(t *testing.T) {
 	})
 
 	secret := HashtagChannelSecret("#test")
-	if err := s.SendChannelMessage(secret, RouteFlood, 3, nil, "Alice: hi"); err != nil {
+	if err := s.SendChannelMessage(secret, 3, nil, "Alice: hi"); err != nil {
 		t.Fatalf("SendChannelMessage: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestSession_SendChannelMessage_AppliesFloodScope(t *testing.T) {
 
 	secret := HashtagChannelSecret("#test")
 	scopeKey := FloodScopeKey("myregion")
-	if err := s.SendChannelMessage(secret, RouteFlood, 3, scopeKey, "Alice: hi"); err != nil {
+	if err := s.SendChannelMessage(secret, 3, scopeKey, "Alice: hi"); err != nil {
 		t.Fatalf("SendChannelMessage: %v", err)
 	}
 

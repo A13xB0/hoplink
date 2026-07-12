@@ -56,7 +56,6 @@ func TestBridge_HandleDiscordMessage_SendsComposedTextToMesh(t *testing.T) {
 	}
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{
@@ -115,7 +114,6 @@ func TestBridge_HandleDiscordMessage_AppliesConfiguredFloodScope(t *testing.T) {
 	}
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.hashSize = 3
 
 	b.handleDiscordMessage(discord.IncomingMessage{
@@ -151,7 +149,6 @@ func TestBridge_HandleDiscordMessage_IgnoresUnmappedChannel(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  "some-other-channel",
@@ -171,7 +168,6 @@ func TestBridge_HandleDiscordMessage_IgnoresOwnWebhookLoop(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  m.cfg.DiscordChannelID,
@@ -192,7 +188,6 @@ func TestBridge_HandleDiscordMessage_IgnoresEmptyContent(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  m.cfg.DiscordChannelID,
@@ -225,7 +220,6 @@ func TestBridge_HandleDiscordMessage_IgnoresMismatchedGuild(t *testing.T) {
 	m.cfg.GuildID = "guild-a"
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  m.cfg.DiscordChannelID,
@@ -247,7 +241,6 @@ func TestBridge_HandleDiscordMessage_AllowsMatchingGuild(t *testing.T) {
 	m.cfg.GuildID = "guild-a"
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 
 	b.handleDiscordMessage(discord.IncomingMessage{
 		ChannelID:  m.cfg.DiscordChannelID,
@@ -279,7 +272,6 @@ func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.retryOnNoRepeat = true
 
 	b.transmitMeshcore(m, "Alice: hello", 0)
@@ -305,7 +297,6 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	b.retryOnNoRepeat = true
 
 	b.transmitMeshcore(m, "Alice: hello", 0)
@@ -335,7 +326,6 @@ func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
 	b.SetMeshcoreSession(session)
-	b.route = meshcore.RouteFlood
 	// b.retryOnNoRepeat left false: the default.
 
 	b.transmitMeshcore(m, "Alice: hello", 0)

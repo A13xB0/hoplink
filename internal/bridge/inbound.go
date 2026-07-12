@@ -154,7 +154,12 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		}
 		idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName)
 		if !ok {
-			logf("bridge %q: meshtastic channel %q is not configured on the attached device (dropping inbound message)", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
+			// A genuine misconfiguration (the bridge's channel_name isn't a
+			// slot on the device) — worth surfacing, but only once, since it
+			// would otherwise fire on every inbound message.
+			if b.warnMeshtasticChanOnce(m.cfg.Meshtastic.ChannelName) {
+				logf("bridge %q: meshtastic channel %q is not configured on the attached device (dropping inbound messages for it until fixed)", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
+			}
 			continue
 		}
 		if idx == msg.ChannelIndex {
@@ -162,7 +167,10 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		}
 	}
 	if len(matches) == 0 {
-		logf("meshtastic: no bridge matches channel index %d for message from %s (check meshtastic.channel_name against the attached device's actual channel slots)", msg.ChannelIndex, msg.FromName)
+		// Expected on a busy mesh: the device hears every channel it's
+		// configured for, most of which this bridge doesn't relay. Debug-only,
+		// matching the MeshCore raw-log path's "no channel matched" handling.
+		b.debugf("meshtastic: no bridge matches channel index %d for message from %s", msg.ChannelIndex, msg.FromName)
 		return
 	}
 
@@ -260,6 +268,19 @@ func (b *Bridge) consumeSelfEcho(key string) bool {
 		return true
 	}
 	return false
+}
+
+// warnMeshtasticChanOnce reports whether this is the first time channelName
+// has been seen as unresolvable on the attached device, marking it so
+// subsequent inbound messages don't repeat the warning.
+func (b *Bridge) warnMeshtasticChanOnce(channelName string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.mtWarnedChan[channelName] {
+		return false
+	}
+	b.mtWarnedChan[channelName] = true
+	return true
 }
 
 // markOutboundSent records that this bridge just sent key, for
