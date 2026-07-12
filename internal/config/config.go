@@ -108,6 +108,13 @@ func scopeKeyForName(scope string) []byte {
 type Meshtastic struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	// HopLimit sets MeshPacket.hop_limit on every outgoing message — how many
+	// times other nodes may rebroadcast it. Valid range 0-7 (a 3-bit field on
+	// the wire; 7 is Meshtastic's own maximum). A *int (not int) so an unset
+	// value can default to 7 while an explicit 0 (send to direct neighbours
+	// only, never rebroadcast) is still honored rather than silently becoming
+	// the default too — see ResolvedHopLimit.
+	HopLimit *int `yaml:"hop_limit"`
 }
 
 // Addr returns "host:port" for net.Dial.
@@ -118,6 +125,15 @@ func (m Meshtastic) Addr() string {
 // Configured reports whether a Meshtastic connection has been given at all.
 func (m Meshtastic) Configured() bool {
 	return strings.TrimSpace(m.Host) != ""
+}
+
+// ResolvedHopLimit returns the effective hop_limit: HopLimit if explicitly
+// set (including 0), else Meshtastic's own maximum (7).
+func (m Meshtastic) ResolvedHopLimit() int {
+	if m.HopLimit == nil {
+		return 7
+	}
+	return *m.HopLimit
 }
 
 // Discord holds the bot's gateway credentials. The whole block is optional
@@ -401,8 +417,13 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("meshcore.path_hash_bytes must be 2 or 3 (1-byte path hashes are not allowed), got %d", c.Meshcore.PathHashBytes))
 		}
 	}
-	if anyMeshtastic && !c.Meshtastic.Configured() {
-		errs = append(errs, "meshtastic.host is required because at least one bridge has meshtastic.enabled: true")
+	if anyMeshtastic {
+		if !c.Meshtastic.Configured() {
+			errs = append(errs, "meshtastic.host is required because at least one bridge has meshtastic.enabled: true")
+		}
+		if hl := c.Meshtastic.ResolvedHopLimit(); hl < 0 || hl > 7 {
+			errs = append(errs, fmt.Sprintf("meshtastic.hop_limit must be between 0 and 7, got %d", hl))
+		}
 	}
 
 	if anyDiscord && strings.TrimSpace(c.Discord.BotToken) == "" {

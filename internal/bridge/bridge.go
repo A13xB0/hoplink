@@ -74,12 +74,13 @@ type notifier interface {
 // RunMeshtastic each own one backend's connected lifetime independently, so
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
-	notify          notifier
-	hashSize        int // path hash bytes/hop for our outgoing MeshCore packets (1-3)
-	debug           bool
-	retryOnNoRepeat bool // meshcore.retry_on_no_repeat — see repeatRetryWait/maxRepeatRetries
-	byName          []*mapping
-	byChan          map[string]*mapping // Discord channel ID -> mapping
+	notify             notifier
+	hashSize           int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	meshtasticHopLimit uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
+	debug              bool
+	retryOnNoRepeat    bool // meshcore.retry_on_no_repeat — see repeatRetryWait/maxRepeatRetries
+	byName             []*mapping
+	byChan             map[string]*mapping // Discord channel ID -> mapping
 
 	// hashBySlot maps a device channel slot index (registered via
 	// meshcore.Session.RegisterChannel) back to our own channelHash, so
@@ -138,15 +139,16 @@ func (b *Bridge) withTxGuard(send func() error) error {
 // reconnects; the caller, cmd/hoplink, owns that lifecycle).
 func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	b := &Bridge{
-		hashSize:        cfg.Meshcore.PathHashBytes,
-		debug:           cfg.Debug,
-		retryOnNoRepeat: cfg.Meshcore.RetryOnNoRepeat,
-		txGuardEnabled:  cfg.Coexistence.Enabled(),
-		txGuardGap:      cfg.Coexistence.GapDuration(),
-		byChan:          make(map[string]*mapping),
-		recentInbound:   make(map[string]time.Time),
-		recentOutbound:  make(map[string]time.Time),
-		mtWarnedChan:    make(map[string]bool),
+		hashSize:           cfg.Meshcore.PathHashBytes,
+		meshtasticHopLimit: uint32(cfg.Meshtastic.ResolvedHopLimit()),
+		debug:              cfg.Debug,
+		retryOnNoRepeat:    cfg.Meshcore.RetryOnNoRepeat,
+		txGuardEnabled:     cfg.Coexistence.Enabled(),
+		txGuardGap:         cfg.Coexistence.GapDuration(),
+		byChan:             make(map[string]*mapping),
+		recentInbound:      make(map[string]time.Time),
+		recentOutbound:     make(map[string]time.Time),
+		mtWarnedChan:       make(map[string]bool),
 	}
 
 	for _, bc := range cfg.Bridges {

@@ -148,7 +148,7 @@ func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
 	for _, chunk := range composeChunks(name, content, meshtasticMaxChunkBytes) {
 		b.markOutboundSent(meshtasticEchoKey(idx, chunk))
 		err := b.withTxGuard(func() error {
-			return session.SendText(m.cfg.Meshtastic.ChannelName, chunk)
+			return session.SendText(m.cfg.Meshtastic.ChannelName, chunk, b.meshtasticHopLimit)
 		})
 		if err != nil {
 			logf("sending to meshtastic channel %q: %v", m.cfg.Name, err)

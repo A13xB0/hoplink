@@ -352,18 +352,21 @@ func (s *Session) ResolveChannelIndex(name string) (uint32, bool) {
 }
 
 // SendText sends text on the named channel (resolved via
-// ResolveChannelIndex) as a broadcast TEXT_MESSAGE_APP packet. The attached
-// device performs that channel's encryption; delivery is fire-and-forget —
-// this package does not track per-packet ACKs.
-func (s *Session) SendText(channelName, text string) error {
+// ResolveChannelIndex) as a broadcast TEXT_MESSAGE_APP packet, with
+// hop_limit set to hopLimit (0-7; how many times other nodes may rebroadcast
+// it — see config.Meshtastic.ResolvedHopLimit). The attached device performs
+// that channel's encryption; delivery is fire-and-forget — this package does
+// not track per-packet ACKs.
+func (s *Session) SendText(channelName, text string, hopLimit uint32) error {
 	idx, ok := s.ResolveChannelIndex(channelName)
 	if !ok {
 		return fmt.Errorf("meshtastic: no channel slot on the attached device matches %q", channelName)
 	}
 	pkt := &generated.MeshPacket{
-		To:      BroadcastAddr,
-		Channel: idx,
-		Id:      rand.Uint32(),
+		To:       BroadcastAddr,
+		Channel:  idx,
+		Id:       rand.Uint32(),
+		HopLimit: hopLimit,
 		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
 			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
 			Payload: []byte(text),

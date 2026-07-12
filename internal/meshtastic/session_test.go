@@ -210,7 +210,7 @@ func TestSendText_UsesResolvedChannelIndexAndBroadcasts(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	if err := s.SendText("general", "Alice: hello mesh"); err != nil {
+	if err := s.SendText("general", "Alice: hello mesh", 7); err != nil {
 		t.Fatalf("SendText: %v", err)
 	}
 
@@ -221,6 +221,9 @@ func TestSendText_UsesResolvedChannelIndexAndBroadcasts(t *testing.T) {
 		}
 		if pkt.To != BroadcastAddr {
 			t.Errorf("To = %#x, want BroadcastAddr", pkt.To)
+		}
+		if pkt.HopLimit != 7 {
+			t.Errorf("HopLimit = %d, want 7", pkt.HopLimit)
 		}
 		decoded, ok := pkt.PayloadVariant.(*generated.MeshPacket_Decoded)
 		if !ok {
@@ -237,9 +240,40 @@ func TestSendText_UsesResolvedChannelIndexAndBroadcasts(t *testing.T) {
 	}
 }
 
+func TestSendText_UsesConfiguredHopLimit(t *testing.T) {
+	sentPackets := make(chan *generated.MeshPacket, 4)
+	addr, _ := startFakeRadio(t, func(msg *generated.ToRadio) []*generated.FromRadio {
+		if w, ok := msg.PayloadVariant.(*generated.ToRadio_WantConfigId); ok {
+			return standardHandshakeReplies(w.WantConfigId)
+		}
+		if p, ok := msg.PayloadVariant.(*generated.ToRadio_Packet); ok {
+			sentPackets <- p.Packet
+		}
+		return nil
+	})
+	s, err := Dial(addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.SendText("general", "hi", 0); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+
+	select {
+	case pkt := <-sentPackets:
+		if pkt.HopLimit != 0 {
+			t.Errorf("HopLimit = %d, want 0 (explicit no-rebroadcast)", pkt.HopLimit)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the fake radio to receive a packet")
+	}
+}
+
 func TestSendText_UnknownChannelReturnsError(t *testing.T) {
 	s, _ := dialAgainstStandardHandshake(t, nil)
-	if err := s.SendText("does-not-exist", "hi"); err == nil {
+	if err := s.SendText("does-not-exist", "hi", 7); err == nil {
 		t.Fatal("expected an error for an unconfigured channel name")
 	}
 }

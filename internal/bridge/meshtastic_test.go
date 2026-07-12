@@ -188,12 +188,38 @@ func TestBridge_HandleDiscordMessage_SendsToMeshtastic(t *testing.T) {
 		if pkt.Channel != 1 {
 			t.Errorf("Channel = %d, want 1 (resolved index for \"general\")", pkt.Channel)
 		}
+		if pkt.HopLimit != 7 {
+			t.Errorf("HopLimit = %d, want 7 (default)", pkt.HopLimit)
+		}
 		decoded, ok := pkt.PayloadVariant.(*generated.MeshPacket_Decoded)
 		if !ok {
 			t.Fatalf("PayloadVariant = %T, want Decoded", pkt.PayloadVariant)
 		}
 		if string(decoded.Decoded.Payload) != "Alice: hello mesh" {
 			t.Errorf("payload = %q, want %q", decoded.Decoded.Payload, "Alice: hello mesh")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the fake radio to receive a packet")
+	}
+}
+
+func TestBridge_HandleDiscordMessage_UsesConfiguredMeshtasticHopLimit(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	b.meshtasticHopLimit = 3
+	b.SetMeshtasticSession(session)
+
+	b.handleDiscordMessage(discord.IncomingMessage{
+		ChannelID:  "chan-1",
+		AuthorName: "Alice",
+		Content:    "hello mesh",
+	})
+
+	select {
+	case pkt := <-sentPackets:
+		if pkt.HopLimit != 3 {
+			t.Errorf("HopLimit = %d, want 3 (configured meshtastic.hop_limit)", pkt.HopLimit)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the fake radio to receive a packet")

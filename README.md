@@ -356,10 +356,11 @@ Required only if some bridge has `meshcore.enabled: true`.
 Omit entirely if you have no Meshtastic device. Required only if some bridge
 has `meshtastic.enabled: true`.
 
-| Field  | Default | Meaning                                  |
-|--------|---------|-------------------------------------------|
-| `host` | —       | Attached device's IP                       |
-| `port` | `4403`  | Device's client-API TCP port                |
+| Field       | Default | Meaning                                  |
+|-------------|---------|-------------------------------------------|
+| `host`      | —       | Attached device's IP                       |
+| `port`      | `4403`  | Device's client-API TCP port                |
+| `hop_limit` | `7`     | `0`-`7` — how many times other nodes may rebroadcast our outgoing messages (Meshtastic's own maximum is 7). Lower it on a small/dense mesh to cut airtime and collisions; `0` sends to direct neighbours only, with no rebroadcast at all |
 
 ### `discord:` (top-level)
 

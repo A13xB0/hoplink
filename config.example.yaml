@@ -73,6 +73,12 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
   port: 4403          # Meshtastic's default client-API TCP port
+  # hop_limit: 7        # optional; 0-7, defaults to 7 (Meshtastic's own
+                      # maximum) — how many times other nodes may rebroadcast
+                      # our outgoing messages. Lower it to keep messages closer
+                      # to this node (e.g. 3 on a small/dense mesh to cut
+                      # airtime and collisions); 0 sends to direct neighbours
+                      # only, with no rebroadcast at all.
   # Note: a Meshtastic "channel" here must already exist as a slot on the
   # attached device (set up via the official Meshtastic app/CLI) — unlike
   # MeshCore's hashtag channels, this bridge cannot create one for you; the

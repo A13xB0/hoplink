@@ -965,6 +965,99 @@ bridges:
 	if !got.Bridges[0].Meshtastic.Enabled || got.Bridges[0].Meshtastic.ChannelName != "general" {
 		t.Errorf("unexpected bridge meshtastic config: %+v", got.Bridges[0].Meshtastic)
 	}
+	if got := got.Meshtastic.ResolvedHopLimit(); got != 7 {
+		t.Errorf("ResolvedHopLimit() = %d, want 7 (default, hop_limit unset)", got)
+	}
+}
+
+func TestLoad_MeshtasticHopLimitExplicitZeroIsHonored(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  hop_limit: 0
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if hl := got.Meshtastic.ResolvedHopLimit(); hl != 0 {
+		t.Errorf("ResolvedHopLimit() = %d, want 0 (explicit override, not the default 7)", hl)
+	}
+}
+
+func TestLoad_MeshtasticHopLimitCustomValueIsHonored(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  hop_limit: 3
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if hl := got.Meshtastic.ResolvedHopLimit(); hl != 3 {
+		t.Errorf("ResolvedHopLimit() = %d, want 3", hl)
+	}
+}
+
+func TestLoad_RejectsOutOfRangeMeshtasticHopLimit(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  hop_limit: 8
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshtastic.hop_limit") {
+		t.Fatalf("expected a meshtastic.hop_limit error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsNegativeMeshtasticHopLimit(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  hop_limit: -1
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshtastic.hop_limit") {
+		t.Fatalf("expected a meshtastic.hop_limit error, got %v", err)
+	}
 }
 
 func TestLoad_RejectsMeshtasticEnabledWithoutChannelName(t *testing.T) {

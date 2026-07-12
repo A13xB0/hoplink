@@ -74,9 +74,11 @@ func newTestMapping(t *testing.T, name, hashtag string) (*mapping, chan webhookP
 
 func newTestBridge(mappings ...*mapping) *Bridge {
 	b := &Bridge{
-		byChan:         make(map[string]*mapping),
-		recentInbound:  make(map[string]time.Time),
-		recentOutbound: make(map[string]time.Time),
+		byChan:             make(map[string]*mapping),
+		recentInbound:      make(map[string]time.Time),
+		recentOutbound:     make(map[string]time.Time),
+		mtWarnedChan:       make(map[string]bool),
+		meshtasticHopLimit: 7,
 	}
 	for _, m := range mappings {
 		b.byName = append(b.byName, m)
