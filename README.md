@@ -111,9 +111,15 @@ to a Discord channel. See [Setup](#setup) below for the full walkthrough
    - In the target channel: **Integrations → Webhooks → New Webhook** →
      copy the URL into `discord_webhook_url` under `bridges:`.
 
-4. Edit the first entry under `bridges:` in `config.yaml` (`name: general`)
-   with your channel details, and delete the commented-out example bridges
-   you don't need.
+4. `config.yaml` ships with four example bridges under `bridges:` —
+   `public-lobby` (MeshCore's public channel ↔ Discord), `longfast`
+   (MeshCore `#longfast` ↔ Meshtastic `LongFast` ↔ Discord, all three
+   relaying directly to each other), `london` (a read-only MeshCore
+   `#london` ↔ Discord monitoring feed), and `field-ops` (a Discord-less
+   MeshCore ↔ Meshtastic relay). Edit the ones you want with your own
+   channel details and delete the rest — see the comments above each one,
+   and the further commented-out examples below them, for what each field
+   does.
 
 5. Run it:
 
@@ -349,7 +355,10 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 | `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "MeshCore: two independent receive paths" above); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
-| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within a few seconds of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on |
+| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within `retry_wait_ms` of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on. When a repeat *is* heard, a log line names which repeater(s) relayed it (their hop hash, nearest-to-us last); when none is heard, a log line says so just before the single retransmit |
+| `chunk_delay_ms` | `0` | Extra pause (milliseconds) held between each piece of a message split across multiple MeshCore chunks (see `limits.max_message_bytes`). `0` sends every chunk back-to-back; raise it if a receiving node/repeater tends to miss or garble chunks sent in quick succession |
+| `retry_wait_ms` | `8000` | How long `retry_on_no_repeat` waits after sending before deciding no repeat was heard and retransmitting once. Must be between `1000` and `120000` (1s-2min) — bounded so it can't fire before a real repeat could plausibly arrive, or be left waiting so long the bridge looks stuck when it's really just still listening |
+| `ignore_repeat_from` | `[]` | Optional list of repeater hop hashes (hex, e.g. `["a1b2c3"]` — find the hex to use in the "repeat heard ... relayed via" log line) whose relay of one of our own messages does *not* count as "the mesh repeated it": if the only repeat heard came from one of these, hoplink still retransmits. Useful for a repeater that reliably rebroadcasts within earshot of our own radio but is known not to actually extend the mesh further. Default for every bridge — override per-bridge with `meshcore.ignore_repeat_from` |
 
 ### `meshtastic:` (top-level)
 
@@ -361,6 +370,9 @@ has `meshtastic.enabled: true`.
 | `host`      | —       | Attached device's IP                       |
 | `port`      | `4403`  | Device's client-API TCP port                |
 | `hop_limit` | `7`     | `0`-`7` — how many times other nodes may rebroadcast our outgoing messages (Meshtastic's own maximum is 7). Lower it on a small/dense mesh to cut airtime and collisions; `0` sends to direct neighbours only, with no rebroadcast at all |
+| `retry_on_no_repeat` | `false` | Mirrors `meshcore.retry_on_no_repeat` above: retransmit an outgoing message once if no self-echo is heard within `retry_wait_ms`. Disabled by default for the same reason. Unlike MeshCore, the Meshtastic client API doesn't expose which node rebroadcast a message, so the log can only confirm a repeat was heard, not name the repeater (and there's no `ignore_repeat_from` equivalent, for the same reason) |
+| `chunk_delay_ms` | `0` | Extra pause (milliseconds) held between each piece of a message split across multiple Meshtastic chunks — same idea as `meshcore.chunk_delay_ms`, applied independently to the Meshtastic side |
+| `retry_wait_ms` | `8000` | Mirrors `meshcore.retry_wait_ms` above; same `1000`-`120000` (ms) bounds apply |
 
 ### `discord:` (top-level)
 

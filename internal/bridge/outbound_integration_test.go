@@ -3,6 +3,7 @@ package bridge
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func TestBridge_HandleDiscordMessage_SendsComposedTextToMesh(t *testing.T) {
 		t.Fatal("timed out waiting for the bridge to send a raw packet")
 	}
 
-	if !b.consumeSelfEcho(meshcoreEchoKey(chHash, "Alice: hello from discord")) {
+	if b.consumeSelfEcho(meshcoreEchoKey(chHash, "Alice: hello from discord"), nil) == notSelfEcho {
 		t.Error("expected handleDiscordMessage to have recorded a self-echo entry")
 	}
 }
@@ -256,23 +257,22 @@ func TestBridge_HandleDiscordMessage_AllowsMatchingGuild(t *testing.T) {
 	}
 }
 
-// withShortRepeatRetryWait shrinks the package-level repeatRetryWait for the
-// duration of a test, restoring it afterwards, so retry_on_no_repeat tests
-// don't have to sleep for the real production wait.
-func withShortRepeatRetryWait(t *testing.T, d time.Duration) {
-	t.Helper()
-	orig := repeatRetryWait
-	repeatRetryWait = d
-	t.Cleanup(func() { repeatRetryWait = orig })
+// withShortRepeatRetryWait sets b's meshcore/meshtastic retry_wait_ms fields
+// directly to d, so retry_on_no_repeat tests don't have to sleep for the
+// real production wait. b is a fresh instance per test, so no restore is
+// needed.
+func withShortRepeatRetryWait(b *Bridge, d time.Duration) {
+	b.meshcoreRetryWait = d
+	b.meshtasticRetryWait = d
 }
 
 func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
-	withShortRepeatRetryWait(t, 50*time.Millisecond)
 	session, sentPackets := dialTestSession(t)
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
 	b.SetMeshcoreSession(session)
-	b.retryOnNoRepeat = true
+	b.meshcoreRetryOnNoRepeat = true
 
 	b.transmitMeshcore(m, "Alice: hello", 0)
 
@@ -292,12 +292,12 @@ func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
 }
 
 func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
-	withShortRepeatRetryWait(t, 200*time.Millisecond)
 	session, sentPackets := dialTestSession(t)
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 200*time.Millisecond)
 	b.SetMeshcoreSession(session)
-	b.retryOnNoRepeat = true
+	b.meshcoreRetryOnNoRepeat = true
 
 	b.transmitMeshcore(m, "Alice: hello", 0)
 
@@ -309,7 +309,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 
 	// Simulate the mesh repeating our own message back to us, exactly as
 	// deliverMeshcoreChannelText would on hearing it.
-	if !b.consumeSelfEcho(meshcoreEchoKey(m.channelHash, "Alice: hello")) {
+	if b.consumeSelfEcho(meshcoreEchoKey(m.channelHash, "Alice: hello"), nil) == notSelfEcho {
 		t.Fatal("expected the echo key to be pending after transmitMeshcore")
 	}
 
@@ -321,12 +321,12 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 }
 
 func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
-	withShortRepeatRetryWait(t, 50*time.Millisecond)
 	session, sentPackets := dialTestSession(t)
 	m, _ := newTestMapping(t, "general", "#general")
 	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
 	b.SetMeshcoreSession(session)
-	// b.retryOnNoRepeat left false: the default.
+	// b.meshcoreRetryOnNoRepeat left false: the default.
 
 	b.transmitMeshcore(m, "Alice: hello", 0)
 
@@ -340,5 +340,103 @@ func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
 	case raw := <-sentPackets:
 		t.Fatalf("expected no retry with retry_on_no_repeat disabled, got a send: %v", raw)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestBridge_TransmitMeshcore_RetriesWhenOnlyRepeatHeardIsFromIgnoredRepeater
+// verifies meshcore.ignore_repeat_from: hearing our own message repeated
+// back via a repeater on the ignore list must NOT cancel the pending retry
+// — it should count exactly as if no repeat had been heard at all.
+func TestBridge_TransmitMeshcore_RetriesWhenOnlyRepeatHeardIsFromIgnoredRepeater(t *testing.T) {
+	ignoredHash := []byte{0xaa, 0xbb, 0xcc}
+	m, _ := newTestMapping(t, "general", "#general")
+	m.ignoreRepeatFrom = [][]byte{ignoredHash}
+	session, sentPackets := dialTestSession(t)
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
+	b.SetMeshcoreSession(session)
+	b.meshcoreRetryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	// Simulate the mesh repeating our own message back to us, but only via
+	// the ignored repeater — should not count as "heard" for retry purposes.
+	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hello", ignoredHash, 3)
+	b.handleMeshcorePacket(lrx)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a retransmit: the only repeat heard was from an ignored repeater")
+	}
+}
+
+// TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater is
+// the counterpart: a repeat heard via a repeater NOT on the ignore list
+// counts normally and cancels the pending retry, even with an ignore list
+// configured (for a different repeater).
+func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t *testing.T) {
+	ignoredHash := []byte{0xaa, 0xbb, 0xcc}
+	otherHash := []byte{0x11, 0x22, 0x33}
+	m, _ := newTestMapping(t, "general", "#general")
+	m.ignoreRepeatFrom = [][]byte{ignoredHash}
+	session, sentPackets := dialTestSession(t)
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 200*time.Millisecond)
+	b.SetMeshcoreSession(session)
+	b.meshcoreRetryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hello", otherHash, 3)
+	b.handleMeshcorePacket(lrx)
+
+	select {
+	case raw := <-sentPackets:
+		t.Fatalf("expected no retry — the repeat was heard from a non-ignored repeater, got a send: %v", raw)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestBridge_SendMeshcore_WaitsChunkDelayBetweenChunks(t *testing.T) {
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+	b.meshcoreChunkDelay = 150 * time.Millisecond
+
+	content := strings.Repeat("x", meshcoreMaxChunkBytes*2)
+	wantChunks := len(composeChunks("Alice", content, meshcoreMaxChunkBytes))
+	if wantChunks < 2 {
+		t.Fatalf("test content must split into at least 2 chunks, got %d", wantChunks)
+	}
+
+	start := time.Now()
+	b.sendMeshcore(m, "Alice", content)
+
+	for i := 0; i < wantChunks; i++ {
+		select {
+		case <-sentPackets:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for chunk %d/%d", i+1, wantChunks)
+		}
+	}
+
+	elapsed := time.Since(start)
+	minWait := time.Duration(wantChunks-1) * b.meshcoreChunkDelay
+	if elapsed < minWait {
+		t.Errorf("elapsed %s sending %d chunks, want at least %s (a delay between each)", elapsed, wantChunks, minWait)
 	}
 }

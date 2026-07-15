@@ -366,6 +366,115 @@ func pumpOneTextMessage(t *testing.T, b *Bridge, session *meshtastic.Session) {
 	}
 }
 
+func TestBridge_TransmitMeshtastic_RetriesWhenNoRepeatHeard(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
+	b.SetMeshtasticSession(session)
+	b.meshtasticRetryOnNoRepeat = true
+
+	idx, _ := session.ResolveChannelIndex("general")
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-sentPackets:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected 2 sends (original + one retry), only got %d", i)
+		}
+	}
+
+	select {
+	case pkt := <-sentPackets:
+		t.Fatalf("expected exactly one retry, got a further send: %v", pkt)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestBridge_TransmitMeshtastic_NoRetryWhenRepeatHeard(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 200*time.Millisecond)
+	b.SetMeshtasticSession(session)
+	b.meshtasticRetryOnNoRepeat = true
+
+	idx, _ := session.ResolveChannelIndex("general")
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	if b.consumeSelfEcho(meshtasticEchoKey(idx, "Alice: hello"), nil) == notSelfEcho {
+		t.Fatal("expected the echo key to be pending after transmitMeshtastic")
+	}
+
+	select {
+	case pkt := <-sentPackets:
+		t.Fatalf("expected no retry once a repeat was heard, got a send: %v", pkt)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestBridge_TransmitMeshtastic_NoRetryWhenDisabled(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
+	b.SetMeshtasticSession(session)
+	// b.meshtasticRetryOnNoRepeat left false: the default.
+
+	idx, _ := session.ResolveChannelIndex("general")
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	select {
+	case pkt := <-sentPackets:
+		t.Fatalf("expected no retry when retry_on_no_repeat is disabled, got a send: %v", pkt)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestBridge_SendMeshtastic_WaitsChunkDelayBetweenChunks(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	b.SetMeshtasticSession(session)
+	b.meshtasticChunkDelay = 150 * time.Millisecond
+
+	content := strings.Repeat("x", meshtasticMaxChunkBytes*2)
+	wantChunks := len(composeChunks("Alice", content, meshtasticMaxChunkBytes))
+	if wantChunks < 2 {
+		t.Fatalf("test content must split into at least 2 chunks, got %d", wantChunks)
+	}
+
+	start := time.Now()
+	b.sendMeshtastic(m, "Alice", content)
+
+	for i := 0; i < wantChunks; i++ {
+		select {
+		case <-sentPackets:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for chunk %d/%d", i+1, wantChunks)
+		}
+	}
+
+	elapsed := time.Since(start)
+	minWait := time.Duration(wantChunks-1) * b.meshtasticChunkDelay
+	if elapsed < minWait {
+		t.Errorf("elapsed %s sending %d chunks, want at least %s (a delay between each)", elapsed, wantChunks, minWait)
+	}
+}
+
 func TestBridge_HandleDiscordMessage_DualBackendSendsToBoth(t *testing.T) {
 	mcSession, mcPackets := dialTestSession(t)
 	mtSession, mtPackets, _ := dialTestMeshtasticSession(t)

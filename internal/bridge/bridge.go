@@ -9,6 +9,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -25,17 +26,11 @@ import (
 // arriving via multiple relay hops.
 const inboundDedupTTL = 60 * time.Second
 
-// selfEchoTTL bounds how long a just-sent outbound-echo key is remembered
-// to suppress our own outbound message being re-delivered to Discord after
-// the mesh floods it back to us.
+// selfEchoTTL is the floor for how long a just-sent outbound-echo key is
+// remembered — both to suppress our own outbound message being re-delivered
+// to Discord after the mesh floods it back to us, and (see
+// effectiveSelfEchoTTL) as the minimum retry_on_no_repeat pending window.
 const selfEchoTTL = 10 * time.Second
-
-// repeatRetryWait is how long meshcore.retry_on_no_repeat waits after
-// sending before deciding no repeater picked the message up. Kept below
-// selfEchoTTL so the periodic sweep (see sweep) can never purge the pending
-// echo key out from under this check. A var (not const) so tests can shrink
-// it rather than sleeping for the real production duration.
-var repeatRetryWait = 8 * time.Second
 
 // maxRepeatRetries caps how many times a single message is retransmitted for
 // never being heard repeated — one retry, not an unbounded loop.
@@ -56,6 +51,13 @@ type mapping struct {
 	channelHash     byte     // valid iff meshcoreEnabled
 	scopeKey        []byte   // resolved from cfg.MeshCore.FloodScope or the global default; nil for unscoped ROUTE_TYPE_FLOOD; valid iff meshcoreEnabled
 	rxScopes        []string // resolved from cfg.MeshCore.RxScopes or the global default; empty = accept every scope on the raw-log path; valid iff meshcoreEnabled
+	// ignoreRepeatFrom is the decoded (resolved from cfg.MeshCore.
+	// IgnoreRepeatFrom or the global default) list of repeater hop hashes
+	// whose relay of one of our own sends from this mapping should not
+	// count as a heard repeat for retry_on_no_repeat — see
+	// meshcore.ignore_repeat_from and consumeSelfEcho. Valid iff
+	// meshcoreEnabled; empty means every repeater's relay counts.
+	ignoreRepeatFrom [][]byte
 
 	meshtasticEnabled bool // channel resolution happens live against whichever meshtastic.Session is attached (see outbound.go/inbound.go)
 }
@@ -74,13 +76,18 @@ type notifier interface {
 // RunMeshtastic each own one backend's connected lifetime independently, so
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
-	notify             notifier
-	hashSize           int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
-	meshtasticHopLimit uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
-	debug              bool
-	retryOnNoRepeat    bool // meshcore.retry_on_no_repeat — see repeatRetryWait/maxRepeatRetries
-	byName             []*mapping
-	byChan             map[string]*mapping // Discord channel ID -> mapping
+	notify                    notifier
+	hashSize                  int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	meshtasticHopLimit        uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
+	debug                     bool
+	meshcoreRetryOnNoRepeat   bool          // meshcore.retry_on_no_repeat — see maxRepeatRetries
+	meshtasticRetryOnNoRepeat bool          // meshtastic.retry_on_no_repeat — mirrors meshcoreRetryOnNoRepeat
+	meshcoreChunkDelay        time.Duration // meshcore.chunk_delay_ms — extra pause between chunks of a split message
+	meshtasticChunkDelay      time.Duration // meshtastic.chunk_delay_ms — extra pause between chunks of a split message
+	meshcoreRetryWait         time.Duration // meshcore.retry_wait_ms — how long transmitMeshcore waits for a repeat before retrying
+	meshtasticRetryWait       time.Duration // meshtastic.retry_wait_ms — how long transmitMeshtastic waits for a repeat before retrying
+	byName                    []*mapping
+	byChan                    map[string]*mapping // Discord channel ID -> mapping
 
 	// hashBySlot maps a device channel slot index (registered via
 	// meshcore.Session.RegisterChannel) back to our own channelHash, so
@@ -105,12 +112,27 @@ type Bridge struct {
 
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
-	recentOutbound map[string]time.Time
+	recentOutbound map[string]pendingEcho
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
 	// mu. Keyed by channel_name (the config value that failed to resolve).
 	mtWarnedChan map[string]bool
+}
+
+// pendingEcho tracks one outbound send awaiting either self-echo suppression
+// (don't repost our own relayed message as if it were new) or, when that
+// protocol's retry_on_no_repeat is enabled, a decision on whether to
+// retransmit — see consumeSelfEcho/echoUnheard.
+type pendingEcho struct {
+	sentAt time.Time
+	// ignoreRepeaters lists repeater hop hashes (meshcore only; always nil
+	// for Meshtastic sends, which carry no repeater identity at all — see
+	// formatRepeaterPath) whose relay of this message should not count as a
+	// heard repeat for retry_on_no_repeat purposes (see mapping.
+	// ignoreRepeatFrom / meshcore.ignore_repeat_from). The message is still
+	// suppressed from being reposted as new content either way.
+	ignoreRepeaters [][]byte
 }
 
 // withTxGuard runs send while holding the shared TX lock (if
@@ -139,16 +161,21 @@ func (b *Bridge) withTxGuard(send func() error) error {
 // reconnects; the caller, cmd/hoplink, owns that lifecycle).
 func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 	b := &Bridge{
-		hashSize:           cfg.Meshcore.PathHashBytes,
-		meshtasticHopLimit: uint32(cfg.Meshtastic.ResolvedHopLimit()),
-		debug:              cfg.Debug,
-		retryOnNoRepeat:    cfg.Meshcore.RetryOnNoRepeat,
-		txGuardEnabled:     cfg.Coexistence.Enabled(),
-		txGuardGap:         cfg.Coexistence.GapDuration(),
-		byChan:             make(map[string]*mapping),
-		recentInbound:      make(map[string]time.Time),
-		recentOutbound:     make(map[string]time.Time),
-		mtWarnedChan:       make(map[string]bool),
+		hashSize:                  cfg.Meshcore.PathHashBytes,
+		meshtasticHopLimit:        uint32(cfg.Meshtastic.ResolvedHopLimit()),
+		debug:                     cfg.Debug,
+		meshcoreRetryOnNoRepeat:   cfg.Meshcore.RetryOnNoRepeat,
+		meshtasticRetryOnNoRepeat: cfg.Meshtastic.RetryOnNoRepeat,
+		meshcoreChunkDelay:        cfg.Meshcore.ChunkDelay(),
+		meshtasticChunkDelay:      cfg.Meshtastic.ChunkDelay(),
+		meshcoreRetryWait:         cfg.Meshcore.RetryWait(),
+		meshtasticRetryWait:       cfg.Meshtastic.RetryWait(),
+		txGuardEnabled:            cfg.Coexistence.Enabled(),
+		txGuardGap:                cfg.Coexistence.GapDuration(),
+		byChan:                    make(map[string]*mapping),
+		recentInbound:             make(map[string]time.Time),
+		recentOutbound:            make(map[string]pendingEcho),
+		mtWarnedChan:              make(map[string]bool),
 	}
 
 	for _, bc := range cfg.Bridges {
@@ -181,6 +208,13 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 			m.channelHash = chHash
 			m.scopeKey = bc.ResolvedScopeKey(cfg.Meshcore.FloodScope)
 			m.rxScopes = bc.ResolvedRxScopes(cfg.Meshcore.RxScopes)
+			for _, h := range bc.ResolvedIgnoreRepeatFrom(cfg.Meshcore.IgnoreRepeatFrom) {
+				decoded, err := hex.DecodeString(h)
+				if err != nil {
+					return nil, fmt.Errorf("bridge %q: meshcore.ignore_repeat_from %q: %w", bc.Name, h, err)
+				}
+				m.ignoreRepeatFrom = append(m.ignoreRepeatFrom, decoded)
+			}
 		}
 		b.byName = append(b.byName, m)
 		if discordEnabled {
@@ -356,6 +390,7 @@ func (b *Bridge) RunHousekeeping(ctx context.Context) {
 
 func (b *Bridge) sweep() {
 	now := time.Now()
+	ttl := b.effectiveSelfEchoTTL()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for k, seen := range b.recentInbound {
@@ -363,11 +398,27 @@ func (b *Bridge) sweep() {
 			delete(b.recentInbound, k)
 		}
 	}
-	for k, sent := range b.recentOutbound {
-		if now.Sub(sent) > selfEchoTTL {
+	for k, pending := range b.recentOutbound {
+		if now.Sub(pending.sentAt) > ttl {
 			delete(b.recentOutbound, k)
 		}
 	}
+}
+
+// effectiveSelfEchoTTL returns how long a pending outbound-echo key survives
+// before the periodic sweep purges it: selfEchoTTL, or either configured
+// retry_wait_ms if longer — long enough that a slow-to-arrive repeat is
+// never swept out from under retry_on_no_repeat's pending check (see
+// echoUnheard), no matter how long retry_wait_ms is configured.
+func (b *Bridge) effectiveSelfEchoTTL() time.Duration {
+	ttl := selfEchoTTL
+	if b.meshcoreRetryWait > ttl {
+		ttl = b.meshcoreRetryWait
+	}
+	if b.meshtasticRetryWait > ttl {
+		ttl = b.meshtasticRetryWait
+	}
+	return ttl
 }
 
 func logf(format string, args ...any) {

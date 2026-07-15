@@ -1,21 +1,37 @@
 # hoplink configuration.
 #
 # Copy this file to config.yaml (or point --config at your own path) and
-# fill in your radio address(es) and one entry in `bridges` per relay
-# mapping. Each bridge independently toggles a MeshCore side, a Meshtastic
-# side, and/or a Discord side — enable any two, or all three. Discord is
-# entirely optional: a bridge with no discord_channel_id/discord_webhook_url
-# set just relays directly between MeshCore and Meshtastic, with no Discord
-# gateway connection needed at all (and the whole `discord:` block below and
-# `discord.bot_token` can then be omitted). Whenever a bridge has both
-# MeshCore and Meshtastic enabled, messages relay directly between them (not
-# just via Discord) — see sender_format below. Two (or more) bridges that
-# reference the SAME MeshCore channel (matching hashtag/secret) and/or the
-# SAME Meshtastic channel_name are treated as siblings: a message landing on
-# any one of them relays directly to every sibling's Discord channel too —
-# e.g. bridging one MeshCore channel into two different Discord guilds. Any
-# side (meshcore/meshtastic/discord) can be marked read_only /
-# discord_read_only to receive only, never transmit — see bridges below.
+# fill in your radio address(es), your Discord bot/webhook details, and the
+# `bridges:` list below. Each bridge independently toggles a MeshCore side, a
+# Meshtastic side, and/or a Discord side — enable any two, or all three.
+# Discord is entirely optional: a bridge with no discord_channel_id/
+# discord_webhook_url set just relays directly between MeshCore and
+# Meshtastic, with no Discord gateway connection needed at all (and the
+# whole `discord:` block below and `discord.bot_token` can then be omitted).
+# Whenever a bridge has both MeshCore and Meshtastic enabled, messages relay
+# directly between them (not just via Discord) — see sender_format below.
+# Two (or more) bridges that reference the SAME MeshCore channel (matching
+# hashtag/secret) and/or the SAME Meshtastic channel_name are treated as
+# siblings: a message landing on any one of them relays directly to every
+# sibling's Discord channel too — e.g. bridging one MeshCore channel into two
+# different Discord guilds. Any side (meshcore/meshtastic/discord) can be
+# marked read_only / discord_read_only to receive only, never transmit — see
+# bridges below.
+#
+# The four bridges below are a realistic starting set, each demonstrating a
+# different shape:
+#   - public-lobby : MeshCore's public channel  <-> Discord
+#   - longfast     : MeshCore #longfast <-> Meshtastic LongFast <-> Discord
+#                     (a true three-way bridge — all three sides relay
+#                     directly to each other, not just via Discord)
+#   - london       : MeshCore #london   <-> Discord, read-only (a one-way
+#                     monitoring feed — nothing typed in Discord goes back
+#                     out to the mesh)
+#   - field-ops    : MeshCore (private channel) <-> Meshtastic, no Discord
+#                     side at all
+# Delete whichever of these you don't need and add your own; see the
+# commented-out examples further down for a few more patterns (sibling
+# bridges across two Discord servers, a disabled work-in-progress bridge).
 
 sender_format: none   # none | short | full — how a relayed message's origin
                        # surface is shown in the sender name on every OTHER
@@ -25,7 +41,10 @@ sender_format: none   # none | short | full — how a relayed message's origin
                        # on Meshtastic (if that bridge relays to both).
                        # Applies to all three surfaces (Discord/MeshCore/
                        # Meshtastic) uniformly. Override per-bridge with
-                       # sender_format below.
+                       # sender_format below. "short" is a good choice once
+                       # you have a three-way bridge like longfast below, so
+                       # you can tell at a glance which surface a message
+                       # crossed in from.
 
 debug: false   # when true, logs every inbound message this bridge suppresses
                # and why (our own echo, a duplicate delivery, or no
@@ -68,7 +87,36 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # sending — a signal no repeater picked it up. Disabled
                       # by default: a missing repeat is also normal on a
                       # small/direct-route mesh, and this doubles airtime for
-                      # every message it triggers on.
+                      # every message it triggers on. When it IS heard, a log
+                      # line names which repeater(s) relayed it (their hop
+                      # hash, nearest-to-us last); when it's never heard, a
+                      # log line says so just before the single retransmit.
+  chunk_delay_ms: 0   # extra pause (milliseconds) held between each piece of
+                      # a message split across multiple MeshCore chunks (the
+                      # "(i/n)" continuation messages) — see limits.
+                      # max_message_bytes. 0 (the default) sends every chunk
+                      # back-to-back with no extra pause. Raise this if a
+                      # receiving node/repeater tends to miss or garble
+                      # chunks sent in quick succession.
+  retry_wait_ms: 8000 # how long retry_on_no_repeat waits after sending
+                      # before deciding no repeat was heard and retransmitting
+                      # once. Must be between 1000 and 120000 (1s-2min):
+                      # bounded so it can't be set so short it fires before a
+                      # real repeat could plausibly arrive, or left so long a
+                      # stuck-looking bridge is actually just still waiting.
+  ignore_repeat_from: []  # optional list of repeater hop hashes (hex, e.g.
+                      # ["a1b2c3"]) whose relay of one of our own messages
+                      # should NOT count as "the mesh repeated it" for
+                      # retry_on_no_repeat — if the only repeat heard came
+                      # from one of these, hoplink still retransmits. Useful
+                      # for a repeater that reliably rebroadcasts within
+                      # earshot of our own radio but is known not to actually
+                      # extend the mesh further, so hearing only it shouldn't
+                      # count as proof the message reached anyone else. Find
+                      # the hex to use in the "repeat heard ... relayed via"
+                      # log line. This is the DEFAULT for every bridge;
+                      # override per-bridge with meshcore.ignore_repeat_from
+                      # below.
 
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
@@ -79,10 +127,31 @@ meshtastic:               # required only if some bridge has meshtastic.enabled:
                       # to this node (e.g. 3 on a small/dense mesh to cut
                       # airtime and collisions); 0 sends to direct neighbours
                       # only, with no rebroadcast at all.
+  retry_on_no_repeat: false  # when true, retransmit an outgoing meshtastic
+                      # message once if we never hear it repeated back by the
+                      # mesh (no self-echo observed) within a few seconds of
+                      # sending — mirrors meshcore.retry_on_no_repeat above.
+                      # Disabled by default for the same reason: a missing
+                      # repeat is also normal on a small/direct-route mesh,
+                      # and this doubles airtime for every message it
+                      # triggers on. Unlike MeshCore, the Meshtastic client
+                      # API doesn't expose which node rebroadcast a message,
+                      # so the log can only confirm a repeat was heard, not
+                      # name the repeater.
+  chunk_delay_ms: 0   # extra pause (milliseconds) held between each piece of
+                      # a message split across multiple Meshtastic chunks —
+                      # see meshcore.chunk_delay_ms above; same idea, applied
+                      # independently to the Meshtastic side.
+  retry_wait_ms: 8000 # how long retry_on_no_repeat waits after sending
+                      # before deciding no repeat was heard — see
+                      # meshcore.retry_wait_ms above; same 1000-120000 (ms)
+                      # bounds apply.
   # Note: a Meshtastic "channel" here must already exist as a slot on the
   # attached device (set up via the official Meshtastic app/CLI) — unlike
   # MeshCore's hashtag channels, this bridge cannot create one for you; the
-  # device itself performs that channel's encryption, not us.
+  # device itself performs that channel's encryption, not us. The longfast
+  # bridge below expects a channel slot named "LongFast" (the standard
+  # primary-channel preset name) to already exist on this device.
 
 discord:                # entirely optional — omit this whole block if no
                          # bridge below sets discord_channel_id (a pure
@@ -115,34 +184,80 @@ coexistence:
                                   # time. Increase if you still see interference.
 
 bridges:
-  # A MeshCore hashtag channel: secret is derived as sha256("#name")[0:16].
-  - name: general
+  # The well-known default MeshCore public channel (same key on every
+  # radio) bridged to Discord. Unlike hashtag/secret_hex channels, the
+  # public channel is always registered at the device's fixed public slot
+  # (index 0) for device-side sync — never searched for or claimed like the
+  # 7 private slots — since every other MeshCore client (and the companion
+  # apps' own UI) expects it there too.
+  - name: public-lobby
     # enabled: false          # optional; defaults to true. Set to false to
                               # keep a not-yet-finished or temporarily-unwanted
                               # bridge in this file without it being built,
                               # connected to, or validated for completeness —
                               # useful while you're still setting one up.
-    discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID"
-    discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL"
-    # discord_read_only: true # optional; this channel then only ever
-                              # receives posts — messages typed there are
-                              # never relayed out to the mesh or a sibling
+    discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID_1"
+    discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL_1"
     guild_id: ""              # optional; if set, messages from any other guild are ignored (sanity check, not required for routing)
     # max_message_bytes: 480  # optional per-bridge override of limits.max_message_bytes
     # sender_format: short    # optional per-bridge override of the top-level sender_format
     meshcore:
       enabled: true
-      hashtag: "#general"
+      public: true
+      # read_only: true          # optional; this side then only ever
+                                  # receives from MeshCore, never transmits
+
+  # A true three-way bridge: MeshCore's "#longfast" hashtag channel, the
+  # Meshtastic device's "LongFast" channel, and a Discord channel all relay
+  # to each other directly — not just via Discord, since both meshcore and
+  # meshtastic are enabled on the same bridge. This is the setup shown in
+  # the README's screenshots.
+  - name: longfast
+    discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID_2"
+    discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL_2"
+    meshcore:
+      enabled: true
+      hashtag: "#longfast"
       # flood_scope: "myregion"  # optional per-bridge override of the
                                   # top-level meshcore.flood_scope above
       # rx_scopes: ["myregion"]  # optional per-bridge override of the
                                   # top-level meshcore.rx_scopes above
+      # ignore_repeat_from: ["a1b2c3"]  # optional per-bridge override of the
+                                  # top-level meshcore.ignore_repeat_from above
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
       # read_only: true          # optional; this side then only ever
-                                  # receives from MeshCore, never transmits
-    # meshtastic:             # uncomment to ALSO relay this same Discord channel to a Meshtastic
-    #   enabled: true         # channel — and, since both would then be enabled on this bridge,
-    #   channel_name: "LongFast"  # MeshCore <-> Meshtastic messages relay directly too
-    #   read_only: true       # optional; this side then only ever receives from Meshtastic, never transmits
+                                  # receives from Meshtastic, never transmits
+
+  # A read-only monitoring feed: MeshCore "#london" traffic posts into
+  # Discord, but discord_read_only means messages typed in that Discord
+  # channel are never relayed back out to the mesh (or to a sibling
+  # bridge's Discord channel).
+  - name: london
+    discord_channel_id: "REPLACE_WITH_DISCORD_CHANNEL_ID_3"
+    discord_webhook_url: "REPLACE_WITH_DISCORD_WEBHOOK_URL_3"
+    discord_read_only: true
+    meshcore:
+      enabled: true
+      hashtag: "#london"
+
+  # A Discord-less bridge: relays directly between a MeshCore private
+  # channel and a Meshtastic channel, with no Discord side at all — Discord
+  # is entirely optional, per bridge, even in a config where other bridges
+  # do use it. discord_channel_id/discord_webhook_url are simply left
+  # unset; both meshcore.enabled and meshtastic.enabled must be true (there
+  # would otherwise be nothing for this bridge to relay between). The
+  # secret below is an explicit 32-hex-char (16-byte) private channel
+  # secret, e.g. one generated in a MeshCore app's "create private channel"
+  # flow — replace it with your own.
+  - name: field-ops
+    meshcore:
+      enabled: true
+      secret_hex: "9cd8fcf22a47333b591d96a2b848b73f"
+    meshtastic:
+      enabled: true
+      channel_name: "FieldOps"
 
   # Two bridges sharing the same MeshCore channel but posting to different
   # Discord servers: a message from either Discord side (or from the mesh)
@@ -160,47 +275,13 @@ bridges:
   #     enabled: true
   #     hashtag: "#general"         # same channel as general-guild-a above
 
-  # A MeshCore private channel: paste an explicit 32-hex-char (16-byte)
-  # secret, e.g. one you generated in a MeshCore app's "create private
-  # channel" flow.
+  # A bridge that's still being set up: enabled: false keeps it in the file
+  # (with a deliberately incomplete meshcore/meshtastic/discord config)
+  # without it being built, connected to, or validated for completeness.
   # - name: emergency
+  #   enabled: false
   #   discord_channel_id: "..."
   #   discord_webhook_url: "..."
   #   meshcore:
   #     enabled: true
-  #     secret_hex: "9cd8fcf22a47333b591d96a2b848b73f"
-
-  # The well-known default MeshCore public channel (same key on every radio).
-  # Unlike hashtag/secret_hex channels, this is always registered at the
-  # device's fixed public slot (index 0) for device-side sync — never
-  # searched for or claimed like the 7 private slots — since every other
-  # MeshCore client expects it there too.
-  # - name: public-lobby
-  #   discord_channel_id: "..."
-  #   discord_webhook_url: "..."
-  #   meshcore:
-  #     enabled: true
-  #     public: true
-
-  # Meshtastic-only bridge (channel_name must match a channel slot already
-  # configured on the attached device).
-  # - name: meshtastic-general
-  #   discord_channel_id: "..."
-  #   discord_webhook_url: "..."
-  #   meshtastic:
-  #     enabled: true
-  #     channel_name: "LongFast"
-
-  # A Discord-less bridge: relays directly between a MeshCore hashtag channel
-  # and a Meshtastic channel, with no Discord side at all. Leave
-  # discord_channel_id/discord_webhook_url unset — both meshcore.enabled and
-  # meshtastic.enabled must be true (there's nothing to relay between
-  # otherwise). You can omit the whole `discord:` block above entirely if
-  # every bridge looks like this one.
-  # - name: mc-mt-relay
-  #   meshcore:
-  #     enabled: true
-  #     hashtag: "#general"
-  #   meshtastic:
-  #     enabled: true
-  #     channel_name: "LongFast"
+  #     hashtag: "#emergency"

@@ -1060,6 +1060,307 @@ bridges:
 	}
 }
 
+func TestLoad_MeshtasticRetryOnNoRepeatDefaultsFalse(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Meshtastic.RetryOnNoRepeat {
+		t.Error("RetryOnNoRepeat = true, want false (default)")
+	}
+}
+
+func TestLoad_MeshtasticRetryOnNoRepeatIsConfigurable(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  retry_on_no_repeat: true
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Meshtastic.RetryOnNoRepeat {
+		t.Error("RetryOnNoRepeat = false, want true")
+	}
+}
+
+func TestLoad_ChunkDelayMsDefaultsToZero(t *testing.T) {
+	cfg := configWithMeshcore("")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Meshcore.ChunkDelayMs != 0 {
+		t.Errorf("Meshcore.ChunkDelayMs = %d, want 0 (default)", got.Meshcore.ChunkDelayMs)
+	}
+	if got.Meshcore.ChunkDelay() != 0 {
+		t.Errorf("Meshcore.ChunkDelay() = %s, want 0", got.Meshcore.ChunkDelay())
+	}
+}
+
+func TestLoad_MeshcoreChunkDelayMsIsConfigurable(t *testing.T) {
+	cfg := configWithMeshcore("  chunk_delay_ms: 500")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := 500 * time.Millisecond; got.Meshcore.ChunkDelay() != want {
+		t.Errorf("Meshcore.ChunkDelay() = %s, want %s", got.Meshcore.ChunkDelay(), want)
+	}
+}
+
+func TestLoad_RejectsNegativeMeshcoreChunkDelayMs(t *testing.T) {
+	cfg := configWithMeshcore("  chunk_delay_ms: -1")
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshcore.chunk_delay_ms") {
+		t.Fatalf("expected a meshcore.chunk_delay_ms error, got %v", err)
+	}
+}
+
+func TestLoad_MeshtasticChunkDelayMsIsConfigurable(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  chunk_delay_ms: 750
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := 750 * time.Millisecond; got.Meshtastic.ChunkDelay() != want {
+		t.Errorf("Meshtastic.ChunkDelay() = %s, want %s", got.Meshtastic.ChunkDelay(), want)
+	}
+}
+
+func TestLoad_RejectsNegativeMeshtasticChunkDelayMs(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  chunk_delay_ms: -1
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshtastic.chunk_delay_ms") {
+		t.Fatalf("expected a meshtastic.chunk_delay_ms error, got %v", err)
+	}
+}
+
+func TestLoad_RetryWaitMsDefaultsTo8000(t *testing.T) {
+	cfg := configWithMeshcore("")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Meshcore.RetryWaitMs != 8000 {
+		t.Errorf("Meshcore.RetryWaitMs = %d, want 8000 (default)", got.Meshcore.RetryWaitMs)
+	}
+	if want := 8 * time.Second; got.Meshcore.RetryWait() != want {
+		t.Errorf("Meshcore.RetryWait() = %s, want %s", got.Meshcore.RetryWait(), want)
+	}
+}
+
+func TestLoad_MeshcoreRetryWaitMsIsConfigurable(t *testing.T) {
+	cfg := configWithMeshcore("  retry_wait_ms: 3000")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := 3 * time.Second; got.Meshcore.RetryWait() != want {
+		t.Errorf("Meshcore.RetryWait() = %s, want %s", got.Meshcore.RetryWait(), want)
+	}
+}
+
+func TestLoad_RejectsMeshcoreRetryWaitMsBelowMinimum(t *testing.T) {
+	cfg := configWithMeshcore("  retry_wait_ms: 999")
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshcore.retry_wait_ms") {
+		t.Fatalf("expected a meshcore.retry_wait_ms error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsMeshcoreRetryWaitMsAboveMaximum(t *testing.T) {
+	cfg := configWithMeshcore("  retry_wait_ms: 120001")
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshcore.retry_wait_ms") {
+		t.Fatalf("expected a meshcore.retry_wait_ms error, got %v", err)
+	}
+}
+
+func TestLoad_AcceptsMeshcoreRetryWaitMsAtBounds(t *testing.T) {
+	for _, ms := range []int{1000, 120000} {
+		cfg := configWithMeshcore(fmt.Sprintf("  retry_wait_ms: %d", ms))
+		if _, err := Load(writeTemp(t, cfg)); err != nil {
+			t.Errorf("Load(retry_wait_ms=%d): %v", ms, err)
+		}
+	}
+}
+
+func TestLoad_MeshtasticRetryWaitMsDefaultsTo8000(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := 8 * time.Second; got.Meshtastic.RetryWait() != want {
+		t.Errorf("Meshtastic.RetryWait() = %s, want %s", got.Meshtastic.RetryWait(), want)
+	}
+}
+
+func TestLoad_RejectsMeshtasticRetryWaitMsOutOfBounds(t *testing.T) {
+	cfg := `
+meshtastic:
+  host: 10.0.0.5
+  retry_wait_ms: 500
+discord:
+  bot_token: abc
+bridges:
+  - name: general
+    discord_channel_id: "1"
+    discord_webhook_url: "https://x"
+    meshtastic:
+      enabled: true
+      channel_name: "general"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshtastic.retry_wait_ms") {
+		t.Fatalf("expected a meshtastic.retry_wait_ms error, got %v", err)
+	}
+}
+
+func TestLoad_IgnoreRepeatFromDefaultsToEmpty(t *testing.T) {
+	cfg := configWithMeshcore("")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Meshcore.IgnoreRepeatFrom) != 0 {
+		t.Errorf("Meshcore.IgnoreRepeatFrom = %v, want empty", got.Meshcore.IgnoreRepeatFrom)
+	}
+}
+
+func TestLoad_IgnoreRepeatFromIsConfigurable(t *testing.T) {
+	cfg := configWithMeshcore(`  ignore_repeat_from: ["a1b2c3", "112233"]`)
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"a1b2c3", "112233"}
+	if len(got.Meshcore.IgnoreRepeatFrom) != len(want) {
+		t.Fatalf("Meshcore.IgnoreRepeatFrom = %v, want %v", got.Meshcore.IgnoreRepeatFrom, want)
+	}
+	for i, w := range want {
+		if got.Meshcore.IgnoreRepeatFrom[i] != w {
+			t.Errorf("IgnoreRepeatFrom[%d] = %q, want %q", i, got.Meshcore.IgnoreRepeatFrom[i], w)
+		}
+	}
+}
+
+func TestLoad_RejectsInvalidHexInIgnoreRepeatFrom(t *testing.T) {
+	cfg := configWithMeshcore(`  ignore_repeat_from: ["not-hex"]`)
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshcore.ignore_repeat_from") {
+		t.Fatalf("expected a meshcore.ignore_repeat_from error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsWrongLengthHexInIgnoreRepeatFrom(t *testing.T) {
+	// 5 bytes decodes fine as hex but is outside the 1-4 byte hop-hash range.
+	cfg := configWithMeshcore(`  ignore_repeat_from: ["aabbccddee"]`)
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "meshcore.ignore_repeat_from") {
+		t.Fatalf("expected a meshcore.ignore_repeat_from error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsInvalidHexInBridgeIgnoreRepeatFrom(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 192.168.4.1
+discord:
+  bot_token: "abc123"
+bridges:
+  - name: general
+    discord_channel_id: "123"
+    discord_webhook_url: "https://discord.com/api/webhooks/x/y"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+      ignore_repeat_from: ["zz"]
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "bridges[general].meshcore.ignore_repeat_from") {
+		t.Fatalf("expected a bridges[general].meshcore.ignore_repeat_from error, got %v", err)
+	}
+}
+
+func TestBridge_ResolvedIgnoreRepeatFrom_UsesGlobalWhenBridgeUnset(t *testing.T) {
+	b := Bridge{}
+	got := b.ResolvedIgnoreRepeatFrom([]string{"a1b2c3"})
+	if len(got) != 1 || got[0] != "a1b2c3" {
+		t.Errorf("ResolvedIgnoreRepeatFrom = %v, want [a1b2c3]", got)
+	}
+}
+
+func TestBridge_ResolvedIgnoreRepeatFrom_BridgeOverrideWinsOverGlobal(t *testing.T) {
+	b := Bridge{MeshCore: BridgeMeshCore{IgnoreRepeatFrom: []string{"112233"}}}
+	got := b.ResolvedIgnoreRepeatFrom([]string{"a1b2c3"})
+	if len(got) != 1 || got[0] != "112233" {
+		t.Errorf("ResolvedIgnoreRepeatFrom = %v, want [112233]", got)
+	}
+}
+
 func TestLoad_RejectsMeshtasticEnabledWithoutChannelName(t *testing.T) {
 	cfg := `
 meshtastic:

@@ -76,7 +76,7 @@ func newTestBridge(mappings ...*mapping) *Bridge {
 	b := &Bridge{
 		byChan:             make(map[string]*mapping),
 		recentInbound:      make(map[string]time.Time),
-		recentOutbound:     make(map[string]time.Time),
+		recentOutbound:     make(map[string]pendingEcho),
 		mtWarnedChan:       make(map[string]bool),
 		meshtasticHopLimit: 7,
 	}
@@ -97,6 +97,31 @@ func buildLogRxData(t *testing.T, secret []byte, timestamp uint32, text string) 
 		Route:       meshcore.RouteFlood,
 		PayloadType: meshcore.PayloadTypeGrpTxt,
 		Payload:     payload,
+	})
+	if err != nil {
+		t.Fatalf("BuildPacket: %v", err)
+	}
+	parsed, err := meshcore.ParsePacket(pkt)
+	if err != nil {
+		t.Fatalf("ParsePacket: %v", err)
+	}
+	return meshcore.LogRxData{SNR: -5, RSSI: -80, Packet: parsed}
+}
+
+// buildLogRxDataWithPath is buildLogRxData plus an explicit hop path, for
+// tests of the retry_on_no_repeat repeater-logging behavior.
+func buildLogRxDataWithPath(t *testing.T, secret []byte, timestamp uint32, text string, path []byte, hashSize int) meshcore.LogRxData {
+	t.Helper()
+	payload, err := meshcore.BuildGroupTextPayload(secret, timestamp, 0, text)
+	if err != nil {
+		t.Fatalf("BuildGroupTextPayload: %v", err)
+	}
+	pkt, err := meshcore.BuildPacket(meshcore.Packet{
+		Route:       meshcore.RouteFlood,
+		PayloadType: meshcore.PayloadTypeGrpTxt,
+		Payload:     payload,
+		Path:        path,
+		HashSize:    hashSize,
 	})
 	if err != nil {
 		t.Fatalf("BuildPacket: %v", err)
@@ -216,10 +241,10 @@ func TestBridge_ConsumeSelfEcho_OnlyConsumesOnce(t *testing.T) {
 	b := newTestBridge()
 	key := meshcoreEchoKey(7, "hi")
 	b.markOutboundSent(key)
-	if !b.consumeSelfEcho(key) {
+	if b.consumeSelfEcho(key, nil) == notSelfEcho {
 		t.Fatal("expected first consume to report a match")
 	}
-	if b.consumeSelfEcho(key) {
+	if b.consumeSelfEcho(key, nil) != notSelfEcho {
 		t.Fatal("expected second consume to report no match (already consumed)")
 	}
 }
@@ -229,8 +254,8 @@ func TestBridge_Sweep_ExpiresOldEntries(t *testing.T) {
 	b.mu.Lock()
 	b.recentInbound["stale"] = time.Now().Add(-2 * inboundDedupTTL)
 	b.recentInbound["fresh"] = time.Now()
-	b.recentOutbound["stale"] = time.Now().Add(-2 * selfEchoTTL)
-	b.recentOutbound["fresh"] = time.Now()
+	b.recentOutbound["stale"] = pendingEcho{sentAt: time.Now().Add(-2 * selfEchoTTL)}
+	b.recentOutbound["fresh"] = pendingEcho{sentAt: time.Now()}
 	b.mu.Unlock()
 
 	b.sweep()
@@ -279,6 +304,51 @@ func TestBridge_HandleMeshcorePacket_LogsSelfEchoSuppression(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "suppressing") || !strings.Contains(buf.String(), "own echo") {
 		t.Errorf("expected a self-echo suppression log line, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_LogsRepeaterOnRepeatHeardWhenRetryEnabled(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.meshcoreRetryOnNoRepeat = true
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+	buf := captureLog(t)
+
+	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hi", []byte{0xab, 0xcd, 0xef}, 3)
+	b.handleMeshcorePacket(lrx)
+
+	if !strings.Contains(buf.String(), "repeat heard") || !strings.Contains(buf.String(), "abcdef") {
+		t.Errorf("expected a repeat-heard log line naming the repeater, got: %s", buf.String())
+	}
+}
+
+func TestBridge_HandleMeshcorePacket_NoRepeaterLogWhenRetryDisabled(t *testing.T) {
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	// b.meshcoreRetryOnNoRepeat left false: the default.
+	b.markOutboundSent(meshcoreEchoKey(m.channelHash, "Alice: hi"))
+	buf := captureLog(t)
+
+	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hi", []byte{0xab, 0xcd, 0xef}, 3)
+	b.handleMeshcorePacket(lrx)
+
+	if strings.Contains(buf.String(), "repeat heard") {
+		t.Errorf("expected no repeat-heard log when retry_on_no_repeat is disabled, got: %s", buf.String())
+	}
+}
+
+func TestFormatRepeaterPath_FormatsHopsInOrder(t *testing.T) {
+	got := formatRepeaterPath([]byte{0xab, 0xcd, 0xef, 0x01, 0x02, 0x03}, 3)
+	want := "abcdef -> 010203"
+	if got != want {
+		t.Errorf("formatRepeaterPath = %q, want %q", got, want)
+	}
+}
+
+func TestFormatRepeaterPath_EmptyPathReportsUnknown(t *testing.T) {
+	got := formatRepeaterPath(nil, 0)
+	if !strings.Contains(got, "unknown") {
+		t.Errorf("formatRepeaterPath(nil, 0) = %q, want it to mention unknown/no path info", got)
 	}
 }
 

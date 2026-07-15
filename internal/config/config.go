@@ -78,6 +78,41 @@ type Meshcore struct {
 	// is also normal on a small/direct-route mesh) and doubles airtime for
 	// every message it triggers on.
 	RetryOnNoRepeat bool `yaml:"retry_on_no_repeat"`
+	// ChunkDelayMs is an extra pause (milliseconds) held between each piece
+	// of a message split across multiple MeshCore chunks (see composeChunks)
+	// — the "(i/n)" continuation messages. 0 (the default) sends every chunk
+	// back-to-back with no extra pause. Raise this if a receiving node or
+	// repeater tends to miss/garble chunks sent in quick succession.
+	ChunkDelayMs int `yaml:"chunk_delay_ms"`
+	// RetryWaitMs is how long (milliseconds) meshcore.retry_on_no_repeat
+	// waits after sending before deciding no repeater picked the message up
+	// and retransmitting once. Bounded (see minRetryWaitMs/maxRetryWaitMs)
+	// so this can't be misconfigured to fire before a real repeat could
+	// plausibly arrive, or left waiting so long it stops being useful.
+	// Default 8000 (8s).
+	RetryWaitMs int `yaml:"retry_wait_ms"`
+	// IgnoreRepeatFrom is a list of repeater hop hashes (hex, matching the
+	// width hoplink logs them at — e.g. "a1b2c3" for a 3-byte hash, see
+	// formatRepeaterPath) whose relay of one of our own messages should NOT
+	// count as "the mesh repeated it" for retry_on_no_repeat: if the only
+	// repeat we hear came from one of these repeaters, hoplink still
+	// retransmits. Useful for a repeater that reliably rebroadcasts within
+	// earshot of our own radio but is known not to actually extend the mesh
+	// further (e.g. it's otherwise isolated) — hearing only it shouldn't
+	// count as proof the message reached the wider mesh. Empty (the
+	// default) means every repeater's relay counts. Global default;
+	// override per-bridge via bridges[].meshcore.ignore_repeat_from.
+	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
+}
+
+// ChunkDelay returns ChunkDelayMs as a time.Duration.
+func (m Meshcore) ChunkDelay() time.Duration {
+	return time.Duration(m.ChunkDelayMs) * time.Millisecond
+}
+
+// RetryWait returns RetryWaitMs as a time.Duration.
+func (m Meshcore) RetryWait() time.Duration {
+	return time.Duration(m.RetryWaitMs) * time.Millisecond
 }
 
 // Addr returns "host:port" for net.Dial.
@@ -115,6 +150,36 @@ type Meshtastic struct {
 	// only, never rebroadcast) is still honored rather than silently becoming
 	// the default too — see ResolvedHopLimit.
 	HopLimit *int `yaml:"hop_limit"`
+	// RetryOnNoRepeat, when true, has hoplink retransmit an outgoing
+	// Meshtastic message once if it never hears its own message repeated
+	// back by the mesh (no self-echo observed) within a short window after
+	// sending — a signal the original transmission likely wasn't picked up
+	// by any other node for rebroadcast. Disabled by default: it's a
+	// heuristic (no rebroadcaster in range is also normal on a small/
+	// direct-route mesh) and doubles airtime for every message it triggers
+	// on. Mirrors meshcore.retry_on_no_repeat.
+	RetryOnNoRepeat bool `yaml:"retry_on_no_repeat"`
+	// ChunkDelayMs is an extra pause (milliseconds) held between each piece
+	// of a message split across multiple Meshtastic chunks (see
+	// composeChunks) — the "(i/n)" continuation messages. 0 (the default)
+	// sends every chunk back-to-back with no extra pause. Raise this if a
+	// receiving node tends to miss/garble chunks sent in quick succession.
+	ChunkDelayMs int `yaml:"chunk_delay_ms"`
+	// RetryWaitMs is how long (milliseconds) meshtastic.retry_on_no_repeat
+	// waits after sending before deciding no repeat was heard and
+	// retransmitting once. Mirrors meshcore.retry_wait_ms — see its comment
+	// for why this is bounded. Default 8000 (8s).
+	RetryWaitMs int `yaml:"retry_wait_ms"`
+}
+
+// ChunkDelay returns ChunkDelayMs as a time.Duration.
+func (m Meshtastic) ChunkDelay() time.Duration {
+	return time.Duration(m.ChunkDelayMs) * time.Millisecond
+}
+
+// RetryWait returns RetryWaitMs as a time.Duration.
+func (m Meshtastic) RetryWait() time.Duration {
+	return time.Duration(m.RetryWaitMs) * time.Millisecond
 }
 
 // Addr returns "host:port" for net.Dial.
@@ -216,6 +281,10 @@ type BridgeMeshCore struct {
 	// this bridge only; empty means use the global default (see
 	// Bridge.ResolvedRxScopes).
 	RxScopes []string `yaml:"rx_scopes"`
+	// IgnoreRepeatFrom optionally overrides the top-level
+	// meshcore.ignore_repeat_from for this bridge only; empty means use the
+	// global default (see Bridge.ResolvedIgnoreRepeatFrom).
+	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -338,6 +407,16 @@ func (b Bridge) ResolvedRxScopes(globalScopes []string) []string {
 	return globalScopes
 }
 
+// ResolvedIgnoreRepeatFrom returns this bridge's effective
+// ignore_repeat_from list: its own meshcore.ignore_repeat_from override if
+// non-empty, else globalList (the top-level meshcore.ignore_repeat_from).
+func (b Bridge) ResolvedIgnoreRepeatFrom(globalList []string) []string {
+	if len(b.MeshCore.IgnoreRepeatFrom) > 0 {
+		return b.MeshCore.IgnoreRepeatFrom
+	}
+	return globalList
+}
+
 // DiscordEnabled reports whether any enabled bridge has a Discord side
 // configured. When false, hoplink runs with no Discord gateway connection at
 // all — purely relaying between MeshCore and Meshtastic.
@@ -377,8 +456,14 @@ func (c *Config) applyDefaults() {
 	if c.Meshcore.PathHashBytes == 0 {
 		c.Meshcore.PathHashBytes = 3
 	}
+	if c.Meshcore.RetryWaitMs == 0 {
+		c.Meshcore.RetryWaitMs = 8000
+	}
 	if c.Meshtastic.Port == 0 {
 		c.Meshtastic.Port = 4403
+	}
+	if c.Meshtastic.RetryWaitMs == 0 {
+		c.Meshtastic.RetryWaitMs = 8000
 	}
 	if c.Limits.MaxMessageBytes == 0 {
 		c.Limits.MaxMessageBytes = 320
@@ -389,6 +474,29 @@ func (c *Config) applyDefaults() {
 	if c.SenderFormat == "" {
 		c.SenderFormat = "none"
 	}
+}
+
+// minRetryWaitMs/maxRetryWaitMs bound meshcore.retry_wait_ms and
+// meshtastic.retry_wait_ms: too short and the check fires before a real
+// repeat could plausibly propagate back to us; unbounded and a
+// misconfigured value could leave retries pending indefinitely.
+const (
+	minRetryWaitMs = 1000
+	maxRetryWaitMs = 120000
+)
+
+// validHexRepeaterHash decodes s as hex and reports an error unless it's
+// 1-4 bytes — meshcore.Packet's HashSize range, and the width hoplink itself
+// logs repeater hashes at (see bridge.formatRepeaterPath).
+func validHexRepeaterHash(s string) error {
+	decoded, err := hex.DecodeString(s)
+	if err != nil {
+		return fmt.Errorf("%q is not valid hex: %w", s, err)
+	}
+	if len(decoded) < 1 || len(decoded) > 4 {
+		return fmt.Errorf("%q must decode to 1-4 bytes (a repeater hop hash), got %d", s, len(decoded))
+	}
+	return nil
 }
 
 // Validate checks the config for structural and semantic errors, returning
@@ -416,6 +524,17 @@ func (c *Config) Validate() error {
 		if c.Meshcore.PathHashBytes < 2 || c.Meshcore.PathHashBytes > 3 {
 			errs = append(errs, fmt.Sprintf("meshcore.path_hash_bytes must be 2 or 3 (1-byte path hashes are not allowed), got %d", c.Meshcore.PathHashBytes))
 		}
+		if c.Meshcore.ChunkDelayMs < 0 {
+			errs = append(errs, fmt.Sprintf("meshcore.chunk_delay_ms must not be negative, got %d", c.Meshcore.ChunkDelayMs))
+		}
+		if c.Meshcore.RetryWaitMs < minRetryWaitMs || c.Meshcore.RetryWaitMs > maxRetryWaitMs {
+			errs = append(errs, fmt.Sprintf("meshcore.retry_wait_ms must be between %d and %d (ms), got %d", minRetryWaitMs, maxRetryWaitMs, c.Meshcore.RetryWaitMs))
+		}
+		for _, h := range c.Meshcore.IgnoreRepeatFrom {
+			if err := validHexRepeaterHash(h); err != nil {
+				errs = append(errs, fmt.Sprintf("meshcore.ignore_repeat_from: %s", err))
+			}
+		}
 	}
 	if anyMeshtastic {
 		if !c.Meshtastic.Configured() {
@@ -423,6 +542,12 @@ func (c *Config) Validate() error {
 		}
 		if hl := c.Meshtastic.ResolvedHopLimit(); hl < 0 || hl > 7 {
 			errs = append(errs, fmt.Sprintf("meshtastic.hop_limit must be between 0 and 7, got %d", hl))
+		}
+		if c.Meshtastic.ChunkDelayMs < 0 {
+			errs = append(errs, fmt.Sprintf("meshtastic.chunk_delay_ms must not be negative, got %d", c.Meshtastic.ChunkDelayMs))
+		}
+		if c.Meshtastic.RetryWaitMs < minRetryWaitMs || c.Meshtastic.RetryWaitMs > maxRetryWaitMs {
+			errs = append(errs, fmt.Sprintf("meshtastic.retry_wait_ms must be between %d and %d (ms), got %d", minRetryWaitMs, maxRetryWaitMs, c.Meshtastic.RetryWaitMs))
 		}
 	}
 
@@ -485,6 +610,11 @@ func (c *Config) Validate() error {
 				errs = append(errs, fmt.Sprintf("bridges[%s].meshcore: exactly one of hashtag, secret_hex, or public must be set (got %d)", label, set))
 			} else if _, err := b.Secret(); err != nil {
 				errs = append(errs, err.Error())
+			}
+			for _, h := range b.MeshCore.IgnoreRepeatFrom {
+				if err := validHexRepeaterHash(h); err != nil {
+					errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.ignore_repeat_from: %s", label, err))
+				}
 			}
 		}
 

@@ -84,6 +84,36 @@ func TestBridge_HandleMeshcorePacket_RxScopes_RejectsUnscopedWhenConfigured(t *t
 	}
 }
 
+// TestBridge_HandleMeshcorePacket_RxScopes_SiblingsFilteredIndependently
+// guards against a bug where rx_scopes was resolved once per packet (from
+// whichever sibling mapping's secret happened to decrypt first) rather than
+// per mapping: two bridges sharing the same MeshCore channel but configuring
+// different rx_scopes overrides must each be filtered against their own
+// setting, not whichever sibling's setting was checked first.
+func TestBridge_HandleMeshcorePacket_RxScopes_SiblingsFilteredIndependently(t *testing.T) {
+	permissive, permissivePosts := newTestMapping(t, "guild-a", "#shared") // rxScopes left empty: accepts any scope
+	restrictive, restrictivePosts := newTestMapping(t, "guild-b", "#shared")
+	restrictive.rxScopes = []string{"myregion"}
+	b := newTestBridge(permissive, restrictive)
+
+	lrx := buildScopedLogRxData(t, permissive.secret, 1000, "Alice: hi", "otherregion")
+	b.handleMeshcorePacket(lrx)
+
+	select {
+	case p := <-permissivePosts:
+		if p.content != "hi" {
+			t.Errorf("got post %+v", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the permissive (no rx_scopes) sibling to still receive an out-of-scope message")
+	}
+	select {
+	case p := <-restrictivePosts:
+		t.Fatalf("expected the restrictive sibling's own rx_scopes to reject this message, got %+v", p)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 func TestBridge_HandleMeshcorePacket_RxScopes_UnsetAcceptsAnyScope(t *testing.T) {
 	m, posts := newTestMapping(t, "general", "#general") // rxScopes left empty (default)
 	b := newTestBridge(m)
