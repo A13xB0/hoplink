@@ -2,9 +2,11 @@ package bridge
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"testing"
+	"time"
 )
 
 // tinyFakeRadio is a minimal companion-protocol responder over a real TCP
@@ -16,7 +18,8 @@ import (
 type tinyFakeRadio struct {
 	t       *testing.T
 	ln      net.Listener
-	conn    net.Conn
+	connCh  chan net.Conn // handover from the accept goroutine to Push
+	conn    net.Conn      // received from connCh; touched only by Push (the test goroutine)
 	onFrame func(cmd byte, frame []byte) []byte // returns response frame, or nil for none
 }
 
@@ -30,7 +33,7 @@ func startTinyFakeRadio(t *testing.T, onFrame func(cmd byte, frame []byte) []byt
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	r := &tinyFakeRadio{t: t, ln: ln, onFrame: onFrame}
+	r := &tinyFakeRadio{t: t, ln: ln, connCh: make(chan net.Conn, 1), onFrame: onFrame}
 	go r.acceptAndServe()
 	return ln.Addr().String(), r
 }
@@ -40,7 +43,7 @@ func (r *tinyFakeRadio) acceptAndServe() {
 	if err != nil {
 		return
 	}
-	r.conn = conn
+	r.connCh <- conn // buffered: never blocks the serve loop
 	for {
 		frame, err := readAppToRadioFrame(conn)
 		if err != nil {
@@ -58,8 +61,15 @@ func (r *tinyFakeRadio) acceptAndServe() {
 }
 
 // Push sends an unsolicited radio -> app frame (e.g. a 0x88 raw RF log) once
-// the connection has been accepted.
+// the connection has been accepted. Only call from the test goroutine.
 func (r *tinyFakeRadio) Push(frame []byte) error {
+	if r.conn == nil {
+		select {
+		case r.conn = <-r.connCh:
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("tinyFakeRadio: no connection accepted within 2s")
+		}
+	}
 	return writeRadioToAppFrame(r.conn, frame)
 }
 
