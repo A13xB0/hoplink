@@ -32,6 +32,20 @@ func TestComposeChunks_LongMessageSplitsWithIndicatorAndFitsBudget(t *testing.T)
 	}
 }
 
+func TestComposeChunks_HardTruncationIsLoggedNotSilent(t *testing.T) {
+	buf := captureLog(t)
+	// Far more content than 50 chunks can carry: forces the pathological
+	// hard-truncate fallback, which must announce the loss.
+	content := strings.Repeat("x", meshcoreMaxChunkBytes*60)
+	chunks := composeChunks("Alice", content, meshcoreMaxChunkBytes)
+	if len(chunks) != 1 {
+		t.Fatalf("expected the hard-truncate fallback's single chunk, got %d", len(chunks))
+	}
+	if !strings.Contains(buf.String(), "hard-truncating") {
+		t.Errorf("expected a hard-truncation log line, logs were:\n%s", buf.String())
+	}
+}
+
 func TestComposeChunks_NeverSplitsAMultiByteRune(t *testing.T) {
 	// Repeated multi-byte emoji, long enough to force a split partway
 	// through what would otherwise land mid-rune with a naive byte cut.

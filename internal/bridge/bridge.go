@@ -277,9 +277,11 @@ func (b *Bridge) initRuntime() {
 }
 
 // Close shuts down the Bridge's own background machinery: the mesh->mesh
-// relay worker and any retry_on_no_repeat timers still pending. Idempotent.
-// It does not touch the mesh sessions (cmd/hoplink's reconnect loops own
-// those) — call it after they have wound down.
+// relay worker, any retry_on_no_repeat timers still pending, and each
+// bridge's webhook sender (bounded-draining whatever Discord posts are
+// still queued). Idempotent. It does not touch the mesh sessions
+// (cmd/hoplink's reconnect loops own those) — call it after they have
+// wound down.
 func (b *Bridge) Close() {
 	b.closeOnce.Do(func() {
 		close(b.closedCh)
@@ -289,6 +291,11 @@ func (b *Bridge) Close() {
 		}
 		b.retryTimers = make(map[*time.Timer]struct{})
 		b.mu.Unlock()
+		for _, m := range b.byName {
+			if m.webhook != nil {
+				m.webhook.Close(5 * time.Second)
+			}
+		}
 	})
 }
 

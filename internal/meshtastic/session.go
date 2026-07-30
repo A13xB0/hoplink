@@ -290,6 +290,9 @@ func (s *Session) handlePacket(pkt *generated.MeshPacket) {
 			PacketID:     pkt.Id,
 			Text:         string(decoded.Decoded.Payload),
 		}
+		// Deliberately always-on (not debug-gated): the symmetric counterpart
+		// to the bridge's always-on per-transmit log lines, so a deployed
+		// bridge's message flow is fully visible from its logs.
 		logf("heard text from %s on channel %d: %q", msg.FromName, msg.ChannelIndex, msg.Text)
 		select {
 		case s.textCh <- msg:

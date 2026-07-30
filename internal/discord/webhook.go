@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -53,6 +54,10 @@ type WebhookSender struct {
 	name   string // bridge name, for log attribution
 	client *http.Client
 	queue  chan webhookJob
+
+	mu     sync.Mutex // guards closed and the queue send in Enqueue
+	closed bool
+	done   chan struct{} // closed by the worker once the queue is drained
 }
 
 type webhookJob struct {
@@ -70,6 +75,7 @@ func NewWebhookSender(url, name string) *WebhookSender {
 		name:   name,
 		client: &http.Client{Timeout: 10 * time.Second},
 		queue:  make(chan webhookJob, webhookQueueSize),
+		done:   make(chan struct{}),
 	}
 	if w.id == "" {
 		// Config validation should have rejected this; without an ID the
@@ -104,10 +110,36 @@ func webhookIDFromURL(url string) string {
 // limited, or Discord is down), the message is dropped rather than growing
 // memory without bound.
 func (w *WebhookSender) Enqueue(username, avatarURL, content string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		logf("webhook %q: closed, dropping message", w.name)
+		return
+	}
 	select {
 	case w.queue <- webhookJob{username: username, avatarURL: avatarURL, content: content}:
 	default:
 		logf("webhook %q: queue full, dropping message", w.name)
+	}
+}
+
+// Close stops accepting new posts and waits up to timeout for the worker to
+// drain what's already queued — without it, up to webhookQueueSize accepted
+// posts per webhook were silently lost at process exit. Idempotent.
+func (w *WebhookSender) Close(timeout time.Duration) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	close(w.queue) // safe: Enqueue checks closed under the same mutex
+	w.mu.Unlock()
+
+	select {
+	case <-w.done:
+	case <-time.After(timeout):
+		logf("webhook %q: shutdown wait expired with messages still queued", w.name)
 	}
 }
 
@@ -118,6 +150,7 @@ func (w *WebhookSender) worker() {
 	for job := range w.queue {
 		w.sendWithRetry(job)
 	}
+	close(w.done) // queue closed and drained
 }
 
 func (w *WebhookSender) sendWithRetry(job webhookJob) {

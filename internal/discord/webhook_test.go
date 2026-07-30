@@ -253,6 +253,45 @@ func TestWebhookSender_Enqueue_DropsWhenQueueFull(t *testing.T) {
 	}
 }
 
+func TestWebhookSender_Close_DrainsQueueBeforeReturning(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body webhookPayload
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		got = append(got, body.Content)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sender := NewWebhookSender(server.URL+"/api/webhooks/1/tok", "test")
+	const n = 10
+	for i := 0; i < n; i++ {
+		sender.Enqueue("Bob", "", fmt.Sprintf("message %d", i))
+	}
+	sender.Close(5 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != n {
+		t.Errorf("delivered %d/%d queued messages before Close returned", len(got), n)
+	}
+}
+
+func TestWebhookSender_Close_EnqueueAfterCloseDropsWithoutPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sender := NewWebhookSender(server.URL+"/api/webhooks/1/tok", "test")
+	sender.Close(time.Second)
+	sender.Close(time.Second) // idempotent
+	sender.Enqueue("Bob", "", "too late") // must drop, not panic on a closed channel
+}
+
 func TestWebhookSender_Send_ErrorStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)

@@ -248,12 +248,15 @@ func composeChunks(name, content string, maxBytes int) []string {
 		}
 	}
 
-	// Pathological case (e.g. an extremely long name): hard-truncate to one message.
+	// Pathological case (e.g. an extremely long name, or a per-bridge
+	// max_message_bytes far above what 50 chunks can carry):
+	// hard-truncate to one message — loudly, never silently.
 	prefixLen := len(name) + 2 // "Name: "
 	avail := maxBytes - prefixLen
 	if avail < 0 {
 		avail = 0
 	}
+	logf("message from %q too long to chunk (would need more than 50 chunks of %d bytes); hard-truncating to a single chunk — the rest is dropped", name, maxBytes)
 	return []string{fmt.Sprintf("%s: %s", name, truncateRunes(contentRunes, avail))}
 }
 

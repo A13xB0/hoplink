@@ -305,6 +305,38 @@ bridges:
 	}
 }
 
+func TestLoad_TwoUnnamedBridgesEachReportNameRequired(t *testing.T) {
+	cfg := `
+meshcore:
+  host: 1.2.3.4
+meshtastic:
+  host: 5.6.7.8
+bridges:
+  - meshcore:
+      enabled: true
+      hashtag: "#one"
+    meshtastic:
+      enabled: true
+      channel_name: "LongFast"
+  - meshcore:
+      enabled: true
+      hashtag: "#two"
+    meshtastic:
+      enabled: true
+      channel_name: "MediumSlow"
+`
+	_, err := Load(writeTemp(t, cfg))
+	if err == nil {
+		t.Fatal("expected name-is-required errors")
+	}
+	if got := strings.Count(err.Error(), "name is required"); got != 2 {
+		t.Errorf("expected both unnamed bridges to report 'name is required', got %d in: %v", got, err)
+	}
+	if strings.Contains(err.Error(), "duplicate bridge name") {
+		t.Errorf("two unnamed bridges must not be reported as duplicates: %v", err)
+	}
+}
+
 func TestLoad_RejectsUnparseableWebhookURL(t *testing.T) {
 	for _, bad := range []string{
 		"https://discord.com/notwebhooks/1/tok", // no /webhooks/ segment: ID unparseable

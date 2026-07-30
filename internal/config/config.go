@@ -605,8 +605,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: name is required", label))
 		} else if seenNames[b.Name] {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: duplicate bridge name", label))
+		} else {
+			// Only record real names: two unnamed bridges should each get
+			// "name is required", not a misleading duplicate-name error.
+			seenNames[b.Name] = true
 		}
-		seenNames[b.Name] = true
 
 		if !b.IsEnabled() {
 			// A disabled bridge may be an incomplete work-in-progress; skip
