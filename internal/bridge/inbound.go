@@ -157,7 +157,7 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 				}
 			}
 			if !skip {
-				b.sendMeshtastic(m, tag, body)
+				b.enqueueRelay(m.cfg.Name, func() { b.sendMeshtastic(m, tag, body) })
 			}
 		}
 	}
@@ -234,7 +234,7 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		}
 		if m.meshcoreEnabled && !relayedHash[m.channelHash] {
 			relayedHash[m.channelHash] = true
-			b.sendMeshcore(m, tag, msg.Text)
+			b.enqueueRelay(m.cfg.Name, func() { b.sendMeshcore(m, tag, msg.Text) })
 		}
 	}
 }
@@ -356,9 +356,13 @@ const (
 // repeater relayed this specific delivery (see lastHopHash); if it matches
 // one of the sending mapping's meshcore.ignore_repeat_from entries (recorded
 // against this key by markOutboundSent), the pending entry is deliberately
-// left in recentOutbound rather than removed — see selfEchoIgnoredRepeater.
-// Otherwise the entry is removed so a genuine duplicate send by someone else
-// later isn't silently swallowed too.
+// left in recentOutbound rather than consumed — see selfEchoIgnoredRepeater.
+// A delivery with no hop metadata at all (repeaterHash nil — the device-sync
+// path) gets the same treatment when an ignore list is configured: it cannot
+// prove a non-ignored repeater relayed it, so it must not cancel the retry
+// the ignore list exists to force. Otherwise one pending send is consumed
+// (see pendingEcho.count) so a genuine duplicate send by someone else later
+// isn't silently swallowed too.
 func (b *Bridge) consumeSelfEcho(key string, repeaterHash []byte) selfEchoOutcome {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -366,10 +370,16 @@ func (b *Bridge) consumeSelfEcho(key string, repeaterHash []byte) selfEchoOutcom
 	if !ok {
 		return notSelfEcho
 	}
-	if repeaterHash != nil && matchesAnyHash(pending.ignoreRepeaters, repeaterHash) {
+	if len(pending.ignoreRepeaters) > 0 &&
+		(repeaterHash == nil || matchesAnyHash(pending.ignoreRepeaters, repeaterHash)) {
 		return selfEchoIgnoredRepeater
 	}
-	delete(b.recentOutbound, key)
+	pending.count--
+	if pending.count <= 0 {
+		delete(b.recentOutbound, key)
+	} else {
+		b.recentOutbound[key] = pending
+	}
 	return selfEchoHeard
 }
 
@@ -395,20 +405,51 @@ func (b *Bridge) warnMeshtasticChanOnce(channelName string) bool {
 func (b *Bridge) markOutboundSent(key string, ignoreRepeaters ...[]byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.recentOutbound[key] = pendingEcho{sentAt: time.Now(), ignoreRepeaters: ignoreRepeaters}
+	pending := b.recentOutbound[key] // zero value if absent: count 0
+	pending.sentAt = time.Now()
+	pending.count++
+	pending.ignoreRepeaters = ignoreRepeaters
+	b.recentOutbound[key] = pending
+}
+
+// unmarkOutboundSent undoes one markOutboundSent for key — called when the
+// send it announced then failed, so the stale pending entry doesn't swallow
+// another node's identical message as "our own echo" until the sweep.
+func (b *Bridge) unmarkOutboundSent(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pending, ok := b.recentOutbound[key]
+	if !ok {
+		return
+	}
+	pending.count--
+	if pending.count <= 0 {
+		delete(b.recentOutbound, key)
+	} else {
+		b.recentOutbound[key] = pending
+	}
 }
 
 // echoUnheard reports whether key is still pending in recentOutbound — i.e.
 // consumeSelfEcho hasn't observed a non-ignored repeat of it yet — and
-// removes it either way, so a genuine echo arriving after this check fires
-// isn't mistaken for an echo of the retransmit that this triggers. Used by
-// meshcore.retry_on_no_repeat (see transmitMeshcore) and meshtastic.
-// retry_on_no_repeat (see transmitMeshtastic); effectiveSelfEchoTTL keeps the
-// sweep from ever purging a key before the configured retry_wait_ms elapses.
+// consumes one pending send either way (see pendingEcho.count), so a genuine
+// echo arriving after this check fires isn't mistaken for an echo of the
+// retransmit that this triggers. Used by meshcore.retry_on_no_repeat (see
+// transmitMeshcore) and meshtastic.retry_on_no_repeat (see
+// transmitMeshtastic); effectiveSelfEchoTTL keeps the sweep from ever
+// purging a key before the configured retry_wait_ms elapses.
 func (b *Bridge) echoUnheard(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	_, pending := b.recentOutbound[key]
-	delete(b.recentOutbound, key)
-	return pending
+	pending, ok := b.recentOutbound[key]
+	if !ok {
+		return false
+	}
+	pending.count--
+	if pending.count <= 0 {
+		delete(b.recentOutbound, key)
+	} else {
+		b.recentOutbound[key] = pending
+	}
+	return true
 }

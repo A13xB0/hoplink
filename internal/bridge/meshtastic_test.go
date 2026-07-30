@@ -406,8 +406,7 @@ func TestBridge_TransmitMeshtastic_RetriesWhenNoRepeatHeard(t *testing.T) {
 	b.SetMeshtasticSession(session)
 	b.meshtasticRetryOnNoRepeat = true
 
-	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
+	b.transmitMeshtastic(m, "Alice: hello", meshtastic.NewPacketID(), 1, 1, 0)
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -424,6 +423,32 @@ func TestBridge_TransmitMeshtastic_RetriesWhenNoRepeatHeard(t *testing.T) {
 	}
 }
 
+func TestBridge_TransmitMeshtastic_RetransmitReusesPacketID(t *testing.T) {
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
+	b.SetMeshtasticSession(session)
+	b.meshtasticRetryOnNoRepeat = true
+
+	const pktID = uint32(0x12345678)
+	b.transmitMeshtastic(m, "Alice: hello", pktID, 1, 1, 0)
+
+	// Same packet ID on the retransmit: mesh-side duplicate suppression (and
+	// sibling bridges' packetID-keyed dedup) then treats it as the same
+	// packet rather than a brand-new message.
+	for i := 0; i < 2; i++ {
+		select {
+		case pkt := <-sentPackets:
+			if pkt.Id != pktID {
+				t.Errorf("send %d: Id = %#x, want the original %#x", i+1, pkt.Id, pktID)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected 2 sends (original + one retry), only got %d", i)
+		}
+	}
+}
+
 func TestBridge_TransmitMeshtastic_NoRetryWhenRepeatHeard(t *testing.T) {
 	session, sentPackets, _ := dialTestMeshtasticSession(t)
 	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
@@ -433,7 +458,7 @@ func TestBridge_TransmitMeshtastic_NoRetryWhenRepeatHeard(t *testing.T) {
 	b.meshtasticRetryOnNoRepeat = true
 
 	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
+	b.transmitMeshtastic(m, "Alice: hello", meshtastic.NewPacketID(), 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -460,8 +485,7 @@ func TestBridge_TransmitMeshtastic_NoRetryWhenDisabled(t *testing.T) {
 	b.SetMeshtasticSession(session)
 	// b.meshtasticRetryOnNoRepeat left false: the default.
 
-	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
+	b.transmitMeshtastic(m, "Alice: hello", meshtastic.NewPacketID(), 1, 1, 0)
 
 	select {
 	case <-sentPackets:

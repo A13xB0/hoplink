@@ -36,6 +36,11 @@ const selfEchoTTL = 10 * time.Second
 // never being heard repeated — one retry, not an unbounded loop.
 const maxRepeatRetries = 1
 
+// relayQueueCap bounds the mesh->mesh relay queue (see Bridge.relayQ) —
+// matching the rx channels' own drop-when-stalled discipline rather than
+// letting a wedged radio grow an unbounded backlog.
+const relayQueueCap = 64
+
 // mapping is one bridge entry: whichever of MeshCore/Meshtastic/Discord it
 // has enabled (at least two of the three).
 type mapping struct {
@@ -118,6 +123,22 @@ type Bridge struct {
 	// bridge is surfaced once rather than on every inbound message. Guarded by
 	// mu. Keyed by channel_name (the config value that failed to resolve).
 	mtWarnedChan map[string]bool
+
+	// closedCh is closed by Close: it stops the relay worker and prevents any
+	// still-outstanding retry_on_no_repeat timer from firing a retransmit
+	// against a torn-down process.
+	closedCh  chan struct{}
+	closeOnce sync.Once
+	// retryTimers tracks outstanding retry_on_no_repeat timers (see
+	// afterFunc) so Close can stop them. Guarded by mu.
+	retryTimers map[*time.Timer]struct{}
+	// relayQ carries mesh->mesh relay sends to a single worker goroutine, so
+	// the RunMeshcore/RunMeshtastic rx consumer loops never block on chunk
+	// delays, the TX guard gap, or a radio command timeout — their inbound
+	// channels are only ~32 deep and drop packets when the consumer stalls.
+	// One worker keeps chunk ordering. Discord-origin sends stay inline: they
+	// already run on discordgo's handler goroutine, not an rx consumer.
+	relayQ chan func()
 }
 
 // pendingEcho tracks one outbound send awaiting either self-echo suppression
@@ -126,6 +147,12 @@ type Bridge struct {
 // retransmit — see consumeSelfEcho/echoUnheard.
 type pendingEcho struct {
 	sentAt time.Time
+	// count is how many identical outbound sends (same channel + text, e.g.
+	// the same message relayed twice in quick succession) are awaiting an
+	// echo under this key. Each markOutboundSent increments it and each
+	// consume/unheard-check decrements it, so one echo can't satisfy two
+	// distinct sends' accounting.
+	count int
 	// ignoreRepeaters lists repeater hop hashes (meshcore only; always nil
 	// for Meshtastic sends, which carry no repeater identity at all — see
 	// formatRepeaterPath) whose relay of this message should not count as a
@@ -177,6 +204,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		recentOutbound:            make(map[string]pendingEcho),
 		mtWarnedChan:              make(map[string]bool),
 	}
+	b.initRuntime()
 
 	for _, bc := range cfg.Bridges {
 		if !bc.IsEnabled() {
@@ -227,6 +255,81 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		bot.OnMessage(b.handleDiscordMessage)
 	}
 	return b, nil
+}
+
+// initRuntime sets up the pieces of a Bridge with a lifecycle of their own:
+// the close gate, the retry-timer registry, and the relay worker goroutine.
+// Split out of New so test-constructed Bridge literals share it.
+func (b *Bridge) initRuntime() {
+	b.closedCh = make(chan struct{})
+	b.retryTimers = make(map[*time.Timer]struct{})
+	b.relayQ = make(chan func(), relayQueueCap)
+	go func() {
+		for {
+			select {
+			case send := <-b.relayQ:
+				send()
+			case <-b.closedCh:
+				return
+			}
+		}
+	}()
+}
+
+// Close shuts down the Bridge's own background machinery: the mesh->mesh
+// relay worker and any retry_on_no_repeat timers still pending. Idempotent.
+// It does not touch the mesh sessions (cmd/hoplink's reconnect loops own
+// those) — call it after they have wound down.
+func (b *Bridge) Close() {
+	b.closeOnce.Do(func() {
+		close(b.closedCh)
+		b.mu.Lock()
+		for t := range b.retryTimers {
+			t.Stop()
+		}
+		b.retryTimers = make(map[*time.Timer]struct{})
+		b.mu.Unlock()
+	})
+}
+
+// afterFunc is time.AfterFunc with a lifecycle: the timer is registered so
+// Close can stop it, deregistered when it fires, and fn is skipped entirely
+// if the Bridge was closed in the meantime. All retry_on_no_repeat
+// retransmit checks are scheduled through this.
+func (b *Bridge) afterFunc(d time.Duration, fn func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	select {
+	case <-b.closedCh:
+		return // closing; don't schedule new work
+	default:
+	}
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
+		// Acquiring mu also orders this callback after the parent's
+		// registration below, so t is always assigned and registered here.
+		b.mu.Lock()
+		delete(b.retryTimers, t)
+		b.mu.Unlock()
+		select {
+		case <-b.closedCh:
+			return
+		default:
+		}
+		fn()
+	})
+	b.retryTimers[t] = struct{}{}
+}
+
+// enqueueRelay hands a mesh->mesh relay send to the single relay worker,
+// dropping it (with a log, mirroring the rx channels' overflow behaviour)
+// if the queue is full — a stalled radio must not wedge inbound consumption.
+func (b *Bridge) enqueueRelay(bridgeName string, send func()) {
+	select {
+	case b.relayQ <- send:
+	default:
+		logf("bridge %q: dropping mesh-to-mesh relay: relay queue is full (radio stalled or badly backlogged)", bridgeName)
+	}
 }
 
 // SetMeshcoreSession attaches (or, passed nil, detaches) the currently live

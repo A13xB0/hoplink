@@ -107,6 +107,7 @@ func main() {
 	}
 
 	wg.Wait()
+	br.Close()
 	logf("shutting down")
 }
 

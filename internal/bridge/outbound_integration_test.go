@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -275,7 +276,7 @@ func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -300,7 +301,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -329,7 +330,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	// b.meshcoreRetryOnNoRepeat left false: the default.
 
-	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -358,7 +359,7 @@ func TestBridge_TransmitMeshcore_RetriesWhenOnlyRepeatHeardIsFromIgnoredRepeater
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -393,7 +394,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t 
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -408,6 +409,134 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t 
 	case raw := <-sentPackets:
 		t.Fatalf("expected no retry — the repeat was heard from a non-ignored repeater, got a send: %v", raw)
 	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestBridge_TransmitMeshcore_RetransmitIsByteIdentical(t *testing.T) {
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 50*time.Millisecond)
+	b.SetMeshcoreSession(session)
+	b.meshcoreRetryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
+
+	var frames [][]byte
+	for i := 0; i < 2; i++ {
+		select {
+		case raw := <-sentPackets:
+			frames = append(frames, raw)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected 2 sends (original + one retry), only got %d", i)
+		}
+	}
+	// Byte-identical retransmit: mesh-side dedup (and sibling bridges'
+	// timestamp-keyed dedup) can then recognise it as the same message.
+	if !bytes.Equal(frames[0], frames[1]) {
+		t.Errorf("retransmit differs from the original send:\n first: %x\nsecond: %x", frames[0], frames[1])
+	}
+}
+
+func TestBridge_TransmitMeshcore_SendErrorClearsPendingEcho(t *testing.T) {
+	// A radio that rejects every raw-packet send.
+	addr, _ := startTinyFakeRadio(t, func(cmd byte, frame []byte) []byte {
+		switch cmd {
+		case meshcore.CmdAppStart:
+			return selfInfoFrame("fake-radio")
+		case meshcore.CmdSendRawPacket:
+			return []byte{meshcore.FrameErr}
+		}
+		return nil
+	})
+	session, _, err := meshcore.Dial(addr, "hoplink-test")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
+
+	// The send failed, so the pending-echo entry must have been rolled back:
+	// otherwise another node genuinely sending this same text within the TTL
+	// would be swallowed as "our own echo" and never relayed.
+	if b.consumeSelfEcho(meshcoreEchoKey(m.channelHash, "Alice: hello"), nil) != notSelfEcho {
+		t.Error("pending echo entry leaked after a failed send")
+	}
+}
+
+func TestBridge_MarkOutbound_IdenticalMessagesEachTrackOwnEcho(t *testing.T) {
+	b := newTestBridge()
+	key := meshcoreEchoKey(0xc6, "Alice: hello")
+	b.markOutboundSent(key)
+	b.markOutboundSent(key)
+
+	if got := b.consumeSelfEcho(key, nil); got != selfEchoHeard {
+		t.Fatalf("first echo: got %v, want selfEchoHeard", got)
+	}
+	if got := b.consumeSelfEcho(key, nil); got != selfEchoHeard {
+		t.Fatalf("second identical send's echo was not tracked separately: got %v", got)
+	}
+	if got := b.consumeSelfEcho(key, nil); got != notSelfEcho {
+		t.Fatalf("third delivery should be treated as new content, got %v", got)
+	}
+}
+
+func TestBridge_TransmitMeshcore_SyncEchoDoesNotCancelIgnoredRepeaterRetry(t *testing.T) {
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	m.ignoreRepeatFrom = [][]byte{{0xaa, 0xbb, 0xcc}}
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 200*time.Millisecond)
+	b.SetMeshcoreSession(session)
+	b.meshcoreRetryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	// The echo arrives via the device-sync path (nil pkt: no hop metadata).
+	// With an ignore list configured, a delivery that can't prove which
+	// repeater relayed it must not cancel the retry the list exists to force.
+	b.deliverMeshcoreChannelText("sync", m.channelHash, 1000, "Alice: hello", nil)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a retransmit: the only echo came via the sync path, which names no repeater")
+	}
+}
+
+func TestBridge_CloseCancelsRetryTimers(t *testing.T) {
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	withShortRepeatRetryWait(b, 150*time.Millisecond)
+	b.SetMeshcoreSession(session)
+	b.meshcoreRetryOnNoRepeat = true
+
+	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the original send")
+	}
+
+	b.Close()
+
+	select {
+	case raw := <-sentPackets:
+		t.Fatalf("retry fired after Close: %v", raw)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 

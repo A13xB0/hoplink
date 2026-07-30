@@ -80,11 +80,31 @@ func newTestBridge(mappings ...*mapping) *Bridge {
 		mtWarnedChan:       make(map[string]bool),
 		meshtasticHopLimit: 7,
 	}
+	b.initRuntime()
 	for _, m := range mappings {
 		b.byName = append(b.byName, m)
 		b.byChan[m.cfg.DiscordChannelID] = m
 	}
 	return b
+}
+
+func TestBridge_EnqueueRelay_DropsWhenFullAndLogs(t *testing.T) {
+	buf := captureLog(t)
+	b := newTestBridge()
+
+	// Wedge the worker on one send, then overfill the queue: at least one
+	// enqueue must be dropped (with a log) rather than blocking the caller —
+	// the caller is the rx consumer loop, which must never stall.
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	b.enqueueRelay("general", func() { <-block })
+	for i := 0; i < relayQueueCap+2; i++ {
+		b.enqueueRelay("general", func() {})
+	}
+
+	if !strings.Contains(buf.String(), "relay queue is full") {
+		t.Errorf("expected an overflow drop log, logs were:\n%s", buf.String())
+	}
 }
 
 func buildLogRxData(t *testing.T, secret []byte, timestamp uint32, text string) meshcore.LogRxData {
