@@ -159,6 +159,9 @@ func (w *WebhookSender) sendWithRetry(job webhookJob) {
 		err := w.Send(ctx, job.username, job.avatarURL, job.content)
 		cancel()
 		if err == nil {
+			// Always-on, matching the mesh surfaces' per-transmit lines, so
+			// every relayed message is visible on every surface it lands on.
+			logf("TX webhook %q: posted as %q: %q", w.name, job.username, job.content)
 			return
 		}
 

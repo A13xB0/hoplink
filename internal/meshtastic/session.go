@@ -70,6 +70,11 @@ type Session struct {
 	havePrimary  bool              // whether we've seen a Channel_PRIMARY in the dump
 	primaryIndex uint32            // that channel's index, valid iff havePrimary
 	myNodeNum    uint32
+	// sentIDs are packet IDs this session recently submitted (see
+	// SendTextOnChannel), so logQueueStatus can tell the device confirming
+	// OUR packet apart from it queueing its own periodic broadcasts
+	// (telemetry/nodeinfo/position also produce QueueStatus replies).
+	sentIDs map[uint32]time.Time
 
 	textCh   chan TextMessage
 	closed   chan struct{}
@@ -102,6 +107,7 @@ func newSessionOverConn(conn net.Conn) (*Session, error) {
 		fr:        newFrameReader(conn),
 		nodeNames: make(map[uint32]string),
 		channels:  make(map[string]uint32),
+		sentIDs:   make(map[uint32]time.Time),
 		textCh:    make(chan TextMessage, 32),
 		closed:    make(chan struct{}),
 	}
@@ -258,20 +264,48 @@ func (s *Session) readLoop() {
 	}
 }
 
-// logQueueStatus surfaces the device's own answer to "did my packet make it
-// into the radio's transmit queue?" — the firmware emits one QueueStatus per
-// enqueued ToRadio packet. This is the strongest transmit confirmation the
-// client API offers without want_ack: "handed to radio" (writeToRadio) only
-// proves the TCP write; this proves the device accepted it for airing.
+// rememberSentID records a packet ID we submitted, pruning stale entries,
+// so queue-status replies can be attributed to our own sends.
+func (s *Session) rememberSentID(id uint32) {
+	now := time.Now()
+	s.mu.Lock()
+	for old, at := range s.sentIDs {
+		if now.Sub(at) > time.Minute {
+			delete(s.sentIDs, old)
+		}
+	}
+	s.sentIDs[id] = now
+	s.mu.Unlock()
+}
+
+// consumeSentID reports whether id is one this session submitted, removing
+// it. A retransmit re-records the same ID, so each send's confirmation is
+// matched independently.
+func (s *Session) consumeSentID(id uint32) bool {
+	s.mu.Lock()
+	_, ours := s.sentIDs[id]
+	delete(s.sentIDs, id)
+	s.mu.Unlock()
+	return ours
+}
+
+// logQueueStatus surfaces the device's answer to "did my packet make it
+// into the radio's transmit queue?" — this is the strongest transmit
+// confirmation the client API offers without want_ack: "handed to radio"
+// (writeToRadio) only proves the TCP write; this proves the device accepted
+// it for airing. The firmware emits a QueueStatus for EVERY packet entering
+// its radio queue — including its own periodic telemetry/nodeinfo/position
+// broadcasts — so only packets this session actually sent are logged
+// (device-own traffic would read as phantom bridge transmits).
 func (s *Session) logQueueStatus(qs *generated.QueueStatus) {
-	if qs == nil {
+	if qs == nil || !s.consumeSentID(qs.MeshPacketId) {
 		return
 	}
 	if qs.Res != 0 {
-		logf("TX device REJECTED packet id %#08x from its radio queue (res=%d, free %d/%d) — it will NOT be transmitted", qs.MeshPacketId, qs.Res, qs.Free, qs.Maxlen)
+		logf("TX device REJECTED our packet id %#08x from its radio queue (res=%d, free %d/%d) — it will NOT be transmitted", qs.MeshPacketId, qs.Res, qs.Free, qs.Maxlen)
 		return
 	}
-	logf("TX device queued packet id %#08x for transmit (radio queue free %d/%d)", qs.MeshPacketId, qs.Free, qs.Maxlen)
+	logf("TX device queued our packet id %#08x for transmit (radio queue free %d/%d)", qs.MeshPacketId, qs.Free, qs.Maxlen)
 }
 
 // handlePacket extracts text messages (TEXT_MESSAGE_APP) for delivery and
@@ -426,6 +460,7 @@ func (s *Session) SendText(channelName, text string, hopLimit uint32) error {
 // duplicate suppression (and any other bridge instance hearing both) treats
 // it as the same packet rather than a new message.
 func (s *Session) SendTextOnChannel(channelIndex uint32, text string, hopLimit, packetID uint32) error {
+	s.rememberSentID(packetID)
 	pkt := &generated.MeshPacket{
 		To:       BroadcastAddr,
 		Channel:  channelIndex,
