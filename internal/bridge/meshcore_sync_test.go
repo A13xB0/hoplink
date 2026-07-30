@@ -19,7 +19,7 @@ func TestBridge_HandleMeshcorePacket_LogsReceivedViaRawLogWithDebug(t *testing.T
 	b.handleMeshcorePacket(lrx)
 	<-posts
 
-	if !strings.Contains(buf.String(), "meshcore: received via raw log on channel_hash") {
+	if !strings.Contains(buf.String(), "[meshcore] RX via raw log on channel_hash") {
 		t.Errorf("expected a raw-log receipt debug line, got: %s", buf.String())
 	}
 }
@@ -38,7 +38,7 @@ func TestBridge_HandleMeshcoreChannelMessage_LogsReceivedViaSyncWithDebug(t *tes
 	})
 	<-posts
 
-	if !strings.Contains(buf.String(), "meshcore: received via sync on channel_hash") {
+	if !strings.Contains(buf.String(), "[meshcore] RX via sync on channel_hash") {
 		t.Errorf("expected a sync receipt debug line, got: %s", buf.String())
 	}
 }
@@ -334,7 +334,7 @@ func TestBridge_RegisterMeshcoreChannels_UsesFixedSlotZeroForPublicChannel(t *te
 	if hash != m.channelHash {
 		t.Errorf("hashBySlot[%d] = %#x, want %#x", meshcore.PublicChannelSlot, hash, m.channelHash)
 	}
-	if !strings.Contains(buf.String(), "public meshcore channel") || !strings.Contains(buf.String(), "installed on the device at slot 0") {
+	if !strings.Contains(buf.String(), "[meshcore] bridge \"public-lobby\": public channel") || !strings.Contains(buf.String(), "installed on the device at slot 0") {
 		t.Errorf("expected a log line reporting the public channel install at slot 0, got: %s", buf.String())
 	}
 }

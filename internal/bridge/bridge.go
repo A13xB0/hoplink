@@ -450,13 +450,13 @@ func (b *Bridge) registerMeshcoreChannels(session *meshcore.Session) {
 		if m.cfg.MeshCore.Public {
 			alreadyInstalled, err := session.RegisterPublicChannel()
 			if err != nil {
-				logf("bridge %q: could not register the public meshcore channel for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, err)
+				logfMeshcore("bridge %q: could not register the public channel for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, err)
 				continue
 			}
 			if alreadyInstalled {
-				logf("bridge %q: public meshcore channel (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
+				logfMeshcore("bridge %q: public channel (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
 			} else {
-				logf("bridge %q: public meshcore channel (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
+				logfMeshcore("bridge %q: public channel (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, m.channelHash, meshcore.PublicChannelSlot)
 			}
 			b.hashBySlot[meshcore.PublicChannelSlot] = m.channelHash
 			continue
@@ -468,13 +468,13 @@ func (b *Bridge) registerMeshcoreChannels(session *meshcore.Session) {
 		}
 		slot, alreadyInstalled, err := session.RegisterChannel(m.secret, name)
 		if err != nil {
-			logf("bridge %q: could not register meshcore channel %q (channel_hash %#x) for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, name, m.channelHash, err)
+			logfMeshcore("bridge %q: could not register channel %q (channel_hash %#x) for device-side sync, falling back to raw-log-only reception: %v", m.cfg.Name, name, m.channelHash, err)
 			continue
 		}
 		if alreadyInstalled {
-			logf("bridge %q: meshcore channel %q (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
+			logfMeshcore("bridge %q: channel %q (channel_hash %#x) already installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
 		} else {
-			logf("bridge %q: meshcore channel %q (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
+			logfMeshcore("bridge %q: channel %q (channel_hash %#x) installed on the device at slot %d", m.cfg.Name, name, m.channelHash, slot)
 		}
 		b.hashBySlot[slot] = m.channelHash
 	}
@@ -573,17 +573,53 @@ func (b *Bridge) effectiveSelfEchoTTL() time.Duration {
 	return ttl
 }
 
+// Log lines are prefixed by the SURFACE they concern — [meshcore],
+// [meshtastic], [discord] — not by which package emitted them, so a
+// grep/eyeball for one surface catches everything about it (the session
+// packages use the same prefixes). Message-flow lines additionally start
+// with "TX"/"RX" for direction at a glance. The [bridge] prefix is reserved
+// for bridge-internal machinery (relay queue, chunking, lifecycle).
 func logf(format string, args ...any) {
 	log.Printf("[bridge] "+format, args...)
 }
 
-// debugf logs like logf but only when config's top-level debug: true is
-// set — for extra-verbose per-message diagnostics (why an inbound message
-// was suppressed) that would otherwise be noise in normal operation, since
-// e.g. self-echo suppression fires on every message this bridge itself
-// relays.
+func logfMeshcore(format string, args ...any) {
+	log.Printf("[meshcore] "+format, args...)
+}
+
+func logfMeshtastic(format string, args ...any) {
+	log.Printf("[meshtastic] "+format, args...)
+}
+
+func logfDiscord(format string, args ...any) {
+	log.Printf("[discord] "+format, args...)
+}
+
+// The debug variants log only when config's top-level debug: true is set —
+// for extra-verbose per-message diagnostics (why an inbound message was
+// suppressed) that would otherwise be noise in normal operation, since e.g.
+// self-echo suppression fires on every message this bridge itself relays.
+
 func (b *Bridge) debugf(format string, args ...any) {
 	if b.debug {
 		logf(format, args...)
+	}
+}
+
+func (b *Bridge) debugMeshcore(format string, args ...any) {
+	if b.debug {
+		logfMeshcore(format, args...)
+	}
+}
+
+func (b *Bridge) debugMeshtastic(format string, args ...any) {
+	if b.debug {
+		logfMeshtastic(format, args...)
+	}
+}
+
+func (b *Bridge) debugDiscord(format string, args ...any) {
+	if b.debug {
+		logfDiscord(format, args...)
 	}
 }

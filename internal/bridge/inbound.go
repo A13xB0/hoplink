@@ -44,7 +44,7 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 		if len(lrx.Packet.Payload) > 0 {
 			wireHash = lrx.Packet.Payload[0]
 		}
-		b.debugf("meshcore: GRP_TXT packet (wire channel_hash %#x, %d-byte payload) didn't decrypt against any configured meshcore.hashtag/secret_hex/public — check it matches the sender's actual channel", wireHash, len(lrx.Packet.Payload))
+		b.debugMeshcore("RX GRP_TXT packet (wire channel_hash %#x, %d-byte payload) didn't decrypt against any configured meshcore.hashtag/secret_hex/public — check it matches the sender's actual channel", wireHash, len(lrx.Packet.Payload))
 		return
 	}
 
@@ -104,11 +104,11 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 	}
 	if outcome := b.consumeSelfEcho(echoKey, lastHopHash(path, hashSize)); outcome != notSelfEcho {
 		if outcome == selfEchoIgnoredRepeater {
-			b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo via an ignored repeater (relayed via %s) — not counted for retry_on_no_repeat", text, channelHash, formatRepeaterPath(path, hashSize))
+			b.debugMeshcore("RX suppressing %q on channel_hash %#x as our own echo via an ignored repeater (relayed via %s) — not counted for retry_on_no_repeat", text, channelHash, formatRepeaterPath(path, hashSize))
 		} else {
-			b.debugf("meshcore: suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", text, channelHash, b.effectiveSelfEchoTTL())
+			b.debugMeshcore("RX suppressing %q on channel_hash %#x as our own echo (sent it ourselves within the last %s)", text, channelHash, b.effectiveSelfEchoTTL())
 			if b.meshcoreRetryOnNoRepeat {
-				logf("meshcore: repeat heard for our own message on channel_hash %#x, relayed via %s", channelHash, formatRepeaterPath(path, hashSize))
+				logfMeshcore("RX repeat heard for our own message on channel_hash %#x, relayed via %s", channelHash, formatRepeaterPath(path, hashSize))
 			}
 		}
 		// Mark the dedup key too: with two independent inbound paths (raw
@@ -120,12 +120,12 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugf("meshcore: suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
+		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
 		return
 	}
 
 	sender, body := splitSenderText(text)
-	b.debugf("meshcore: received via %s on channel_hash %#x from %q: %q", source, channelHash, sender, body)
+	b.debugMeshcore("RX via %s on channel_hash %#x from %q: %q", source, channelHash, sender, body)
 
 	session := b.meshtasticSessionRef()
 	relayedIdx := map[uint32]bool{}
@@ -136,11 +136,11 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		if pkt != nil && len(m.rxScopes) > 0 {
 			matches, err := pkt.MatchesAnyScope(m.rxScopes)
 			if err != nil {
-				b.debugf("meshcore: bridge %q: error checking rx_scopes: %v", m.cfg.Name, err)
+				b.debugMeshcore("RX bridge %q: error checking rx_scopes: %v", m.cfg.Name, err)
 				continue
 			}
 			if !matches {
-				b.debugf("meshcore: bridge %q: dropping message on channel_hash %#x — its scope doesn't match configured rx_scopes %v", m.cfg.Name, channelHash, m.rxScopes)
+				b.debugMeshcore("RX bridge %q: dropping message on channel_hash %#x — its scope doesn't match configured rx_scopes %v", m.cfg.Name, channelHash, m.rxScopes)
 				continue
 			}
 		}
@@ -186,7 +186,7 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 			// slot on the device) — worth surfacing, but only once, since it
 			// would otherwise fire on every inbound message.
 			if b.warnMeshtasticChanOnce(m.cfg.Meshtastic.ChannelName) {
-				logf("bridge %q: meshtastic channel %q is not configured on the attached device (dropping inbound messages for it until fixed)", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
+				logfMeshtastic("RX bridge %q: channel %q is not configured on the attached device (dropping inbound messages for it until fixed)", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
 			}
 			continue
 		}
@@ -198,7 +198,7 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		// Expected on a busy mesh: the device hears every channel it's
 		// configured for, most of which this bridge doesn't relay. Debug-only,
 		// matching the MeshCore raw-log path's "no channel matched" handling.
-		b.debugf("meshtastic: no bridge matches channel index %d for message from %s", msg.ChannelIndex, msg.FromName)
+		b.debugMeshtastic("RX no bridge matches channel index %d for message from %s", msg.ChannelIndex, msg.FromName)
 		return
 	}
 
@@ -208,13 +208,13 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 	// identity (see the doc comment below), so meshcore.ignore_repeat_from's
 	// equivalent can never apply — every pending echo counts as heard.
 	if b.consumeSelfEcho(echoKey, nil) != notSelfEcho {
-		b.debugf("meshtastic: suppressing %q on channel index %d as our own echo (sent it ourselves within the last %s)", msg.Text, msg.ChannelIndex, b.effectiveSelfEchoTTL())
+		b.debugMeshtastic("RX suppressing %q on channel index %d as our own echo (sent it ourselves within the last %s)", msg.Text, msg.ChannelIndex, b.effectiveSelfEchoTTL())
 		if b.meshtasticRetryOnNoRepeat {
 			// Unlike MeshCore's hop path, the Meshtastic client API exposes no
 			// per-hop relay identity for a rebroadcast packet — msg.From is
 			// always the original sender, never carried by hop, so we can only
 			// confirm a repeat was heard, not name which node rebroadcast it.
-			logf("meshtastic: repeat heard for our own message on channel index %d (Meshtastic doesn't expose which node rebroadcast it)", msg.ChannelIndex)
+			logfMeshtastic("RX repeat heard for our own message on channel index %d (Meshtastic doesn't expose which node rebroadcast it)", msg.ChannelIndex)
 		}
 		// Mark the dedup key too: a repeated flood-hop delivery of this same
 		// echo would otherwise find neither map populated (this consume only
@@ -223,11 +223,11 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugf("meshtastic: suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
+		b.debugMeshtastic("RX suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
 		return
 	}
 
-	b.debugf("meshtastic: received on channel index %d from %s: %q", msg.ChannelIndex, msg.FromName, msg.Text)
+	b.debugMeshtastic("RX on channel index %d from %s: %q", msg.ChannelIndex, msg.FromName, msg.Text)
 
 	relayedHash := map[byte]bool{}
 	for _, m := range matches {

@@ -389,7 +389,8 @@ func TestBridge_SendMeshtastic_LogsEachTransmit(t *testing.T) {
 
 	logs := buf.String()
 	for _, want := range []string{
-		`meshtastic channel "general"`,
+		`[meshtastic] TX bridge "general"`,
+		`channel "general"`,
 		"chunk 1/1",
 		"attempt 1/2",
 		"handed to radio",
@@ -655,7 +656,7 @@ func TestBridge_HandleMeshtasticMessage_LogsReceivedWithDebug(t *testing.T) {
 	pumpOneTextMessage(t, b, session)
 	<-posts // wait for the post so the log line has definitely been written
 
-	if !strings.Contains(buf.String(), "meshtastic: received on channel index 1") {
+	if !strings.Contains(buf.String(), "[meshtastic] RX on channel index 1") {
 		t.Errorf("expected a debug receipt log line, got: %s", buf.String())
 	}
 }
@@ -697,7 +698,7 @@ func TestBridge_HandleDiscordMessage_LogsReceivedWithDebug(t *testing.T) {
 		Content:    "hello mesh",
 	})
 
-	if !strings.Contains(buf.String(), `discord: received in channel "general" from Alice: "hello mesh"`) {
+	if !strings.Contains(buf.String(), `[discord] RX bridge "general": from Alice: "hello mesh"`) {
 		t.Errorf("expected a debug receipt log line, got: %s", buf.String())
 	}
 }
@@ -715,7 +716,7 @@ func TestBridge_HandleDiscordMessage_StaysSilentWithoutDebug(t *testing.T) {
 		Content:    "hello mesh",
 	})
 
-	if strings.Contains(buf.String(), "discord: received in channel") {
+	if strings.Contains(buf.String(), `[discord] RX bridge`) {
 		t.Errorf("expected no receipt log without debug: true, got: %s", buf.String())
 	}
 }

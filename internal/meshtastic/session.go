@@ -252,8 +252,26 @@ func (s *Session) readLoop() {
 			s.recordNodeInfo(v.NodeInfo)
 		case *generated.FromRadio_Channel:
 			s.recordChannel(v.Channel)
+		case *generated.FromRadio_QueueStatus:
+			s.logQueueStatus(v.QueueStatus)
 		}
 	}
+}
+
+// logQueueStatus surfaces the device's own answer to "did my packet make it
+// into the radio's transmit queue?" — the firmware emits one QueueStatus per
+// enqueued ToRadio packet. This is the strongest transmit confirmation the
+// client API offers without want_ack: "handed to radio" (writeToRadio) only
+// proves the TCP write; this proves the device accepted it for airing.
+func (s *Session) logQueueStatus(qs *generated.QueueStatus) {
+	if qs == nil {
+		return
+	}
+	if qs.Res != 0 {
+		logf("TX device REJECTED packet id %#08x from its radio queue (res=%d, free %d/%d) — it will NOT be transmitted", qs.MeshPacketId, qs.Res, qs.Free, qs.Maxlen)
+		return
+	}
+	logf("TX device queued packet id %#08x for transmit (radio queue free %d/%d)", qs.MeshPacketId, qs.Free, qs.Maxlen)
 }
 
 // handlePacket extracts text messages (TEXT_MESSAGE_APP) for delivery and
@@ -268,7 +286,7 @@ func (s *Session) handlePacket(pkt *generated.MeshPacket) {
 		// it for us — usually means its channel PSK doesn't match the
 		// sender's, or the sender is on a channel this device doesn't have
 		// configured at all.
-		logf("packet from node !%08x on channel %d arrived still encrypted (device could not decrypt it)", pkt.From, pkt.Channel)
+		logf("RX packet from node !%08x on channel %d arrived still encrypted (device could not decrypt it)", pkt.From, pkt.Channel)
 		return
 	}
 
@@ -293,11 +311,11 @@ func (s *Session) handlePacket(pkt *generated.MeshPacket) {
 		// Deliberately always-on (not debug-gated): the symmetric counterpart
 		// to the bridge's always-on per-transmit log lines, so a deployed
 		// bridge's message flow is fully visible from its logs.
-		logf("heard text from %s on channel %d: %q", msg.FromName, msg.ChannelIndex, msg.Text)
+		logf("RX heard text from %s on channel %d: %q", msg.FromName, msg.ChannelIndex, msg.Text)
 		select {
 		case s.textCh <- msg:
 		default: // drop if the consumer is falling behind
-			logf("dropped text message from %s: consumer is falling behind", msg.FromName)
+			logf("RX dropped text message from %s: consumer is falling behind", msg.FromName)
 		}
 	case generated.PortNum_NODEINFO_APP:
 		var user generated.User

@@ -243,7 +243,7 @@ func (s *Session) readLoop() {
 					select {
 					case s.logRxCh <- lrx:
 					default:
-						logf("dropped LogRxData push: consumer is falling behind")
+						logf("RX dropped LogRxData push: consumer is falling behind")
 					}
 				}
 			}

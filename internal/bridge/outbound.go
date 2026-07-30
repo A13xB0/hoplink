@@ -41,12 +41,12 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	if strings.TrimSpace(msg.Content) == "" {
 		// Typically an attachment-only or embed-only post: there's no text
 		// to put on the mesh. Debug-visible rather than fully silent.
-		b.debugf("discord: dropping message with no text content in channel %q from %s", m.cfg.Name, msg.AuthorName)
+		b.debugDiscord("RX bridge %q: dropping message with no text content from %s", m.cfg.Name, msg.AuthorName)
 		return
 	}
-	b.debugf("discord: received in channel %q from %s: %q", m.cfg.Name, msg.AuthorName, msg.Content)
+	b.debugDiscord("RX bridge %q: from %s: %q", m.cfg.Name, msg.AuthorName, msg.Content)
 	if m.cfg.GuildID != "" && msg.GuildID != "" && m.cfg.GuildID != msg.GuildID {
-		logf("bridge %q: ignoring message from guild %q (configured for guild %q)", m.cfg.Name, msg.GuildID, m.cfg.GuildID)
+		logfDiscord("RX bridge %q: ignoring message from guild %q (configured for guild %q)", m.cfg.Name, msg.GuildID, m.cfg.GuildID)
 		return
 	}
 	if m.cfg.DiscordReadOnly {
@@ -128,7 +128,7 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int) {
 	session := b.meshcoreSessionRef()
 	if session == nil {
-		logf("bridge %q: meshcore not currently connected; dropping outgoing message", m.cfg.Name)
+		logfMeshcore("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
 		return
 	}
 	echoKey := meshcoreEchoKey(m.channelHash, chunk)
@@ -138,14 +138,14 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 	})
 	if err != nil {
 		b.unmarkOutboundSent(echoKey)
-		logf("bridge %q: sending to meshcore channel (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
+		logfMeshcore("TX bridge %q: send failed (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
 		return
 	}
-	logf("bridge %q: sent %d bytes to meshcore channel_hash %#x (chunk %d/%d, attempt %d/%d): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
+	logfMeshcore("TX bridge %q: sent %d bytes to channel_hash %#x (chunk %d/%d, attempt %d/%d): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
 	if b.meshcoreRetryOnNoRepeat && attempt < maxRepeatRetries {
 		b.afterFunc(b.meshcoreRetryWait, func() {
 			if b.echoUnheard(echoKey) {
-				logf("bridge %q: no repeat heard for message on meshcore channel within %s, retransmitting", m.cfg.Name, b.meshcoreRetryWait)
+				logfMeshcore("TX bridge %q: no repeat heard within %s, retransmitting", m.cfg.Name, b.meshcoreRetryWait)
 				b.transmitMeshcore(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1)
 			}
 		})
@@ -161,11 +161,11 @@ func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
 	// reconnect uses the live session and its current channel table.
 	session := b.meshtasticSessionRef()
 	if session == nil {
-		logf("bridge %q: meshtastic not currently connected; dropping outgoing message", m.cfg.Name)
+		logfMeshtastic("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
 		return
 	}
 	if _, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName); !ok {
-		logf("bridge %q: meshtastic channel %q is not configured on the attached device", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
+		logfMeshtastic("TX bridge %q: channel %q is not configured on the attached device", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
 		return
 	}
 	chunks := composeChunks(name, content, meshtasticMaxChunkBytes)
@@ -193,12 +193,12 @@ func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
 func (b *Bridge) transmitMeshtastic(m *mapping, chunk string, pktID uint32, chunkIdx, chunkTotal, attempt int) {
 	session := b.meshtasticSessionRef()
 	if session == nil {
-		logf("bridge %q: meshtastic not currently connected; dropping outgoing message", m.cfg.Name)
+		logfMeshtastic("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
 		return
 	}
 	idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName)
 	if !ok {
-		logf("bridge %q: meshtastic channel %q is not configured on the attached device", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
+		logfMeshtastic("TX bridge %q: channel %q is not configured on the attached device", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
 		return
 	}
 	echoKey := meshtasticEchoKey(idx, chunk)
@@ -208,14 +208,14 @@ func (b *Bridge) transmitMeshtastic(m *mapping, chunk string, pktID uint32, chun
 	})
 	if err != nil {
 		b.unmarkOutboundSent(echoKey)
-		logf("bridge %q: sending to meshtastic channel %q (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, m.cfg.Meshtastic.ChannelName, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
+		logfMeshtastic("TX bridge %q: send failed on channel %q (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, m.cfg.Meshtastic.ChannelName, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
 		return
 	}
-	logf("bridge %q: sent %d bytes to meshtastic channel %q (index %d, packet id %#08x, chunk %d/%d, attempt %d/%d): handed to radio", m.cfg.Name, len(chunk), m.cfg.Meshtastic.ChannelName, idx, pktID, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
+	logfMeshtastic("TX bridge %q: sent %d bytes to channel %q (index %d, packet id %#08x, chunk %d/%d, attempt %d/%d): handed to radio", m.cfg.Name, len(chunk), m.cfg.Meshtastic.ChannelName, idx, pktID, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
 	if b.meshtasticRetryOnNoRepeat && attempt < maxRepeatRetries {
 		b.afterFunc(b.meshtasticRetryWait, func() {
 			if b.echoUnheard(echoKey) {
-				logf("bridge %q: no repeat heard for message on meshtastic channel within %s, retransmitting", m.cfg.Name, b.meshtasticRetryWait)
+				logfMeshtastic("TX bridge %q: no repeat heard within %s, retransmitting", m.cfg.Name, b.meshtasticRetryWait)
 				b.transmitMeshtastic(m, chunk, pktID, chunkIdx, chunkTotal, attempt+1)
 			}
 		})
