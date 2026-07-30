@@ -94,6 +94,77 @@ func TestBridge_HandleMeshcorePacket_RelaysToMeshtasticOncePerSharedChannel(t *t
 	}
 }
 
+func TestBridge_HandleMeshcorePacket_ReadOnlySiblingDoesNotConsumeMeshtasticRelaySlot(t *testing.T) {
+	// m1 (visited first, read-only) and m2 (writable) share the same
+	// Meshtastic channel. m1 must not claim the once-per-channel relay slot
+	// it will never use — m2's relay has to still happen.
+	m1, _ := newTestMapping(t, "guild1", "#shared")
+	m1.meshtasticEnabled = true
+	m1.cfg.Meshtastic.Enabled = true
+	m1.cfg.Meshtastic.ChannelName = "general"
+	m1.cfg.Meshtastic.ReadOnly = true
+
+	m2, _ := newTestMapping(t, "guild2", "#shared")
+	m2.meshtasticEnabled = true
+	m2.cfg.Meshtastic.Enabled = true
+	m2.cfg.Meshtastic.ChannelName = "general"
+
+	mtSession, mtPackets, _ := dialTestMeshtasticSession(t)
+	b := newTestBridge(m1, m2)
+	b.SetMeshtasticSession(mtSession)
+
+	lrx := buildLogRxData(t, m1.secret, 1000, "Alice: hi")
+	b.handleMeshcorePacket(lrx)
+
+	select {
+	case <-mtPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the writable sibling never relayed: the read-only sibling consumed the relay slot")
+	}
+}
+
+func TestBridge_HandleMeshtasticMessage_ReadOnlySiblingDoesNotConsumeMeshcoreRelaySlot(t *testing.T) {
+	mtSession, _, radio := dialTestMeshtasticSession(t)
+	m1, _ := newTestMeshtasticMapping(t, "guild1", "chan-1", "general")
+	m2, _ := newTestMeshtasticMapping(t, "guild2", "chan-2", "general")
+
+	secret := meshcore.HashtagChannelSecret("#shared")
+	chHash, err := meshcore.ChannelHash(secret)
+	if err != nil {
+		t.Fatalf("ChannelHash: %v", err)
+	}
+	for _, m := range []*mapping{m1, m2} {
+		m.meshcoreEnabled = true
+		m.cfg.MeshCore.Enabled = true
+		m.cfg.MeshCore.Hashtag = "#shared"
+		m.secret = secret
+		m.channelHash = chHash
+	}
+	m1.cfg.MeshCore.ReadOnly = true // visited first; must not claim the slot
+
+	mcSession, mcPackets := dialTestSession(t)
+	b := newTestBridge(m1, m2)
+	b.SetMeshtasticSession(mtSession)
+	b.SetMeshcoreSession(mcSession)
+	b.hashSize = 3
+
+	radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
+		From:    42,
+		Channel: 1,
+		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+			Payload: []byte("hi"),
+		}},
+	}}})
+	pumpOneTextMessage(t, b, mtSession)
+
+	select {
+	case <-mcPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the writable sibling never relayed: the read-only sibling consumed the relay slot")
+	}
+}
+
 // Symmetric scenario for Meshtastic: two bridges sharing the same
 // meshtastic channel_name but posting to different Discord channels.
 

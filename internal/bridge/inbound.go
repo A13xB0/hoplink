@@ -148,7 +148,10 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		if m.discordEnabled {
 			b.postToWebhook(m, sender, tag, body)
 		}
-		if m.meshtasticEnabled {
+		// A read-only mapping must not claim the relay slot for its channel
+		// index: it would never transmit, and a writable sibling sharing the
+		// same physical channel would then be skipped — losing the relay.
+		if m.meshtasticEnabled && !m.cfg.Meshtastic.ReadOnly {
 			skip := false
 			if session != nil {
 				if idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName); ok {
@@ -232,7 +235,10 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		if m.discordEnabled {
 			b.postToWebhook(m, msg.FromName, tag, msg.Text)
 		}
-		if m.meshcoreEnabled && !relayedHash[m.channelHash] {
+		// As in deliverMeshcoreChannelText: a read-only mapping never claims
+		// the relay slot, so a writable sibling sharing the channel still
+		// relays.
+		if m.meshcoreEnabled && !m.cfg.MeshCore.ReadOnly && !relayedHash[m.channelHash] {
 			relayedHash[m.channelHash] = true
 			b.enqueueRelay(m.cfg.Name, func() { b.sendMeshcore(m, tag, msg.Text) })
 		}

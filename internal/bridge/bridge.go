@@ -384,6 +384,11 @@ func (b *Bridge) RunMeshcore(ctx context.Context, session *meshcore.Session) err
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-session.Done():
+			// Done() competing with non-empty rx channels is a coin flip
+			// (select picks uniformly among ready cases): messages already
+			// received and buffered must not be discarded just because the
+			// connection died after delivering them.
+			b.drainMeshcore(session)
 			return session.Err()
 		case lrx, ok := <-session.LogRxFrames():
 			if !ok {
@@ -395,6 +400,22 @@ func (b *Bridge) RunMeshcore(ctx context.Context, session *meshcore.Session) err
 				return session.Err()
 			}
 			b.handleMeshcoreChannelMessage(msg)
+		}
+	}
+}
+
+// drainMeshcore handles whatever is already buffered on session's rx
+// channels, without blocking — called once when the session dies, so
+// messages heard before the disconnect still get relayed.
+func (b *Bridge) drainMeshcore(session *meshcore.Session) {
+	for {
+		select {
+		case lrx := <-session.LogRxFrames():
+			b.handleMeshcorePacket(lrx)
+		case msg := <-session.ChannelMessages():
+			b.handleMeshcoreChannelMessage(msg)
+		default:
+			return
 		}
 	}
 }
@@ -460,17 +481,38 @@ func (b *Bridge) RunMeshtastic(ctx context.Context, session *meshtastic.Session)
 	b.SetMeshtasticSession(session)
 	defer b.SetMeshtasticSession(nil)
 
+	// A fresh session means a possibly-reconfigured device: forget which
+	// channel_names we've warned about, so a still-missing channel warns
+	// again (and a fixed one stops being suppressed by a stale entry).
+	b.mu.Lock()
+	b.mtWarnedChan = make(map[string]bool)
+	b.mu.Unlock()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-session.Done():
+			// See RunMeshcore: don't discard already-buffered messages.
+			b.drainMeshtastic(session)
 			return session.Err()
 		case msg, ok := <-session.TextMessages():
 			if !ok {
 				return session.Err()
 			}
 			b.handleMeshtasticMessage(session, msg)
+		}
+	}
+}
+
+// drainMeshtastic is drainMeshcore's counterpart for the Meshtastic session.
+func (b *Bridge) drainMeshtastic(session *meshtastic.Session) {
+	for {
+		select {
+		case msg := <-session.TextMessages():
+			b.handleMeshtasticMessage(session, msg)
+		default:
+			return
 		}
 	}
 }

@@ -1,8 +1,10 @@
 package bridge
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -394,6 +396,53 @@ func TestBridge_SendMeshtastic_LogsEachTransmit(t *testing.T) {
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("expected transmit log to contain %q, logs were:\n%s", want, logs)
+		}
+	}
+}
+
+func TestBridge_RunMeshtastic_DrainsBufferedInboundOnSessionClose(t *testing.T) {
+	session, _, radio := dialTestMeshtasticSession(t)
+	m, posts := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+
+	// Buffer several messages on the session's rx channel (nothing is
+	// consuming yet), then kill the connection.
+	const n = 3
+	for i := 0; i < n; i++ {
+		_ = radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
+			From:    42,
+			Channel: 1,
+			Id:      uint32(100 + i), // distinct packets, not dedup hits
+			PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+				Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+				Payload: []byte(fmt.Sprintf("buffered message %d", i)),
+			}},
+		}}})
+	}
+	// Let the session's readLoop move all n into its buffered channel.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(session.TextMessages()) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d messages buffered", len(session.TextMessages()), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = radio.conn.Close()
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session never noticed the dropped connection")
+	}
+
+	// Done() is now ready alongside a non-empty rx channel: without the
+	// drain, select's uniform choice can discard already-heard messages.
+	_ = b.RunMeshtastic(context.Background(), session)
+
+	for i := 0; i < n; i++ {
+		select {
+		case <-posts:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d buffered messages were delivered after session close", i, n)
 		}
 	}
 }
