@@ -439,6 +439,47 @@ func TestSession_PushFrames_LogsDropsOnceConsumed(t *testing.T) {
 	}
 }
 
+func TestSession_WriteTimeoutClosesSession(t *testing.T) {
+	old := writeTimeout
+	writeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { writeTimeout = old })
+
+	clientConn, serverConn := net.Pipe()
+	// Handle the AppStart handshake by hand, then stop reading entirely —
+	// a black-holed peer. net.Pipe is unbuffered, so the next write blocks
+	// until the deadline trips.
+	go func() {
+		fr := newFrameReaderWithMarker(serverConn, frameMarkerToRadio)
+		if _, err := fr.ReadFrame(); err != nil { // CMD_APP_START
+			return
+		}
+		_, _ = serverConn.Write(encodeFrameWithMarker(selfInfoFrame("Node"), frameMarkerFromRadio))
+	}()
+
+	s, _, err := newSessionOverConn(clientConn, "hoplink-test")
+	if err != nil {
+		t.Fatalf("newSessionOverConn: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.SendRawPacket(make([]byte, 100), 0) }()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected the send to fail against a non-reading peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send blocked far past the write deadline")
+	}
+
+	select {
+	case <-s.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not tear down after the write timeout")
+	}
+}
+
 func TestSession_Close_UnblocksPendingRequest(t *testing.T) {
 	s, _, _ := dialOverPipe(t, func(frame []byte) []byte {
 		if frame[0] == CmdAppStart {

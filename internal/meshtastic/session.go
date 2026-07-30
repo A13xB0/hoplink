@@ -25,6 +25,11 @@ const BroadcastAddr uint32 = 0xFFFFFFFF
 // handshake to complete (my_info/node_info/channel dump + config_complete_id).
 const DefaultCommandTimeout = 10 * time.Second
 
+// writeTimeout bounds every single conn.Write (see writeToRadio and
+// keepAliveLoop) so a black-holed peer can't wedge the write path
+// indefinitely. A var (not const) so tests can shorten it.
+var writeTimeout = 10 * time.Second
+
 // keepAliveInterval is how often Session writes a harmless keepalive
 // sequence when otherwise idle. A var (not const) so tests can shorten it
 // rather than waiting out the real interval.
@@ -85,6 +90,13 @@ func Dial(addr string) (*Session, error) {
 		_ = tc.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	return newSessionOverConn(conn)
+}
+
+// newSessionOverConn builds a Session over an already-established conn
+// (split from Dial so tests can drive one over a net.Pipe): wake sequence,
+// want_config handshake, then the read/keepalive loops.
+func newSessionOverConn(conn net.Conn) (*Session, error) {
 	s := &Session{
 		conn:      conn,
 		fr:        newFrameReader(conn),
@@ -110,7 +122,12 @@ func Dial(addr string) (*Session, error) {
 	return s, nil
 }
 
-// writeToRadio marshals and frames a ToRadio message to the device.
+// writeToRadio marshals and frames a ToRadio message to the device. Writes
+// carry a deadline — an undeadlined Write against a black-holed TCP peer
+// blocks forever holding writeMu, wedging sends and the keepalive with
+// readLoop possibly never erroring, so the reconnect loop would never fire.
+// On a write error the connection is closed outright so readLoop unblocks
+// and the session tears down.
 func (s *Session) writeToRadio(msg *generated.ToRadio) error {
 	data, err := proto.Marshal(msg)
 	if err != nil {
@@ -122,7 +139,11 @@ func (s *Session) writeToRadio(msg *generated.ToRadio) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_, err = s.conn.Write(frame)
+	if err != nil {
+		_ = s.conn.Close()
+	}
 	return err
 }
 
@@ -143,7 +164,11 @@ func (s *Session) keepAliveLoop() {
 		select {
 		case <-ticker.C:
 			s.writeMu.Lock()
+			_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			_, err := s.conn.Write(wakeSequence())
+			if err != nil {
+				_ = s.conn.Close() // unblock readLoop so the session tears down
+			}
 			s.writeMu.Unlock()
 			if err != nil {
 				logf("keepalive write failed: %v", err)

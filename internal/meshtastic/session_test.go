@@ -505,6 +505,67 @@ func TestDial_FailsPromptlyIfConnectionDropsMidHandshake(t *testing.T) {
 	}
 }
 
+func TestSession_WriteTimeoutClosesSession(t *testing.T) {
+	old := writeTimeout
+	writeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { writeTimeout = old })
+
+	clientConn, serverConn := net.Pipe()
+	// Answer the want_config handshake by hand, then stop reading entirely —
+	// a black-holed peer. net.Pipe is unbuffered, so the next write blocks
+	// until the deadline trips.
+	go func() {
+		fr := newFrameReader(serverConn)
+		for {
+			frame, err := fr.readFrame()
+			if err != nil {
+				return
+			}
+			var toRadio generated.ToRadio
+			if err := proto.Unmarshal(frame, &toRadio); err != nil {
+				continue
+			}
+			if w, ok := toRadio.PayloadVariant.(*generated.ToRadio_WantConfigId); ok {
+				for _, r := range standardHandshakeReplies(w.WantConfigId) {
+					data, err := proto.Marshal(r)
+					if err != nil {
+						return
+					}
+					ef, err := encodeFrame(data)
+					if err != nil {
+						return
+					}
+					_, _ = serverConn.Write(ef)
+				}
+				return // black-holed from here on
+			}
+		}
+	}()
+
+	s, err := newSessionOverConn(clientConn)
+	if err != nil {
+		t.Fatalf("newSessionOverConn: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.SendTextOnChannel(1, "hello", 7, 1) }()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected the send to fail against a non-reading peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send blocked far past the write deadline")
+	}
+
+	select {
+	case <-s.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not tear down after the write timeout")
+	}
+}
+
 func TestSession_KeepAliveLoop_WritesPeriodicWakeBytes(t *testing.T) {
 	orig := keepAliveInterval
 	keepAliveInterval = 20 * time.Millisecond

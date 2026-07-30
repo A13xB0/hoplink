@@ -30,6 +30,11 @@ const keepAliveInterval = 60 * time.Second
 // (some middleboxes track actual data packets, not bare ACKs).
 const tcpKeepAlivePeriod = 30 * time.Second
 
+// writeTimeout bounds every single conn.Write (see writeLoop) so a
+// black-holed peer can't wedge the write path indefinitely. A var (not
+// const) so tests can shorten it.
+var writeTimeout = 10 * time.Second
+
 // syncPollInterval is how often syncLoop drains queued channel messages via
 // CMD_SYNC_NEXT_MESSAGE even without a PUSH_CODE_MSG_WAITING notification —
 // a safety net in case that push was itself missed (the same class of
@@ -196,12 +201,21 @@ func (s *Session) keepAliveLoop() {
 }
 
 // writeLoop serialises writes to the connection (mirrors the companion
-// protocol's single-in-flight-command model).
+// protocol's single-in-flight-command model). Every write carries a
+// deadline: against a black-holed TCP peer an undeadlined Write blocks
+// forever while cmdMu is held, wedging every send, the keepalive, and the
+// sync drain — with readLoop possibly never erroring either, so the
+// reconnect loop would never fire. On a write error the connection is
+// closed outright so readLoop unblocks and the session tears down.
 func (s *Session) writeLoop() {
 	for {
 		select {
 		case req := <-s.writeCh:
+			_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			_, err := s.conn.Write(EncodeFrame(req.frame))
+			if err != nil {
+				_ = s.conn.Close()
+			}
 			req.err <- err
 		case <-s.closed:
 			return
