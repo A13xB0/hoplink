@@ -185,6 +185,8 @@ func TestBridge_HandleMeshtasticMessage_DoesNotRelayWhenMeshcoreDisabled(t *test
 	radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
 		From:    1,
 		Channel: 1,
+		RxSnr:   8.5,
+		RxRssi:  -60, // heard over the air, not a client-API loopback
 		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
 			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
 			Payload: []byte("hi"),
@@ -225,6 +227,8 @@ func TestBridge_RelayedMessage_SelfEchoDoesNotLoopBackAcrossBackends(t *testing.
 		From:    1, // our own node
 		Channel: 1,
 		Id:      relayedPkt.Id,
+		RxSnr:   8.5,
+		RxRssi:  -60, // heard over the air, not a client-API loopback
 		PayloadVariant: &generated.MeshPacket_Decoded{
 			Decoded: &generated.Data{Portnum: generated.PortNum_TEXT_MESSAGE_APP, Payload: decoded.Decoded.Payload},
 		},

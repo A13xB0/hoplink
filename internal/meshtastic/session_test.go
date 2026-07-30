@@ -271,6 +271,53 @@ func TestSendText_UsesConfiguredHopLimit(t *testing.T) {
 	}
 }
 
+func TestSendTextOnChannel_UsesGivenIDAndIndex(t *testing.T) {
+	sentPackets := make(chan *generated.MeshPacket, 4)
+	addr, _ := startFakeRadio(t, func(msg *generated.ToRadio) []*generated.FromRadio {
+		if w, ok := msg.PayloadVariant.(*generated.ToRadio_WantConfigId); ok {
+			return standardHandshakeReplies(w.WantConfigId)
+		}
+		if p, ok := msg.PayloadVariant.(*generated.ToRadio_Packet); ok {
+			sentPackets <- p.Packet
+		}
+		return nil
+	})
+	s, err := Dial(addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	const wantID = uint32(0xCAFEBABE)
+	for i := 0; i < 2; i++ {
+		if err := s.SendTextOnChannel(1, "Alice: hello mesh", 7, wantID); err != nil {
+			t.Fatalf("SendTextOnChannel call %d: %v", i+1, err)
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case pkt := <-sentPackets:
+			if pkt.Id != wantID {
+				t.Errorf("send %d: Id = %#x, want the given %#x", i+1, pkt.Id, wantID)
+			}
+			if pkt.Channel != 1 {
+				t.Errorf("send %d: Channel = %d, want the given index 1", i+1, pkt.Channel)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for send %d to reach the fake radio", i+1)
+		}
+	}
+}
+
+func TestNewPacketID_NeverZero(t *testing.T) {
+	for i := 0; i < 10000; i++ {
+		if NewPacketID() == 0 {
+			t.Fatal("NewPacketID returned 0")
+		}
+	}
+}
+
 func TestSendText_UnknownChannelReturnsError(t *testing.T) {
 	s, _ := dialAgainstStandardHandshake(t, nil)
 	if err := s.SendText("does-not-exist", "hi", 7); err == nil {
@@ -323,6 +370,49 @@ func TestTextMessages_UnknownNodeFallsBackToHexID(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for TextMessages delivery")
+	}
+}
+
+func TestTextMessages_DropsOwnNodeLoopback(t *testing.T) {
+	s, radioCh := dialAgainstStandardHandshake(t, nil)
+	radio := <-radioCh
+
+	// From our own node number (42, per standardHandshakeReplies' MyInfo)
+	// with no RF reception metadata: the device looping our transmission
+	// back over the client API. It must not surface as a heard message —
+	// the bridge would mistake it for a mesh rebroadcast and falsely
+	// satisfy retry_on_no_repeat.
+	loopback := &generated.MeshPacket{
+		From:    42,
+		Channel: 1,
+		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+			Payload: []byte("our own loopback"),
+		}},
+	}
+	radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: loopback}})
+	// The same own-From packet WITH RF metadata is a genuine over-the-air
+	// rebroadcast (Meshtastic preserves the original sender in From) — the
+	// very signal retry_on_no_repeat listens for — and must be delivered.
+	rebroadcast := &generated.MeshPacket{
+		From:    42,
+		Channel: 1,
+		RxSnr:   7.25,
+		RxRssi:  -80,
+		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
+			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
+			Payload: []byte("our own rebroadcast"),
+		}},
+	}
+	radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: rebroadcast}})
+
+	select {
+	case msg := <-s.TextMessages():
+		if msg.Text != "our own rebroadcast" {
+			t.Errorf("delivered %q first, want the loopback dropped and %q delivered", msg.Text, "our own rebroadcast")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the rebroadcast delivery")
 	}
 }
 

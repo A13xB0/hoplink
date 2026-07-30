@@ -380,7 +380,16 @@ func (s *Session) SendRawPacket(packet []byte, priority byte) error {
 // transport_codes[0] is set via CalcTransportCode. Pass nil for the
 // legacy unscoped behaviour (plain ROUTE_TYPE_FLOOD).
 func (s *Session) SendChannelMessage(secret16 []byte, hashSize int, scopeKey16 []byte, text string) error {
-	payload, err := BuildGroupTextPayload(secret16, uint32(time.Now().Unix()), 0, text)
+	return s.SendChannelMessageAt(secret16, hashSize, scopeKey16, text, uint32(time.Now().Unix()))
+}
+
+// SendChannelMessageAt is SendChannelMessage with a caller-controlled payload
+// timestamp. A retransmission that reuses the original send's timestamp
+// produces byte-identical RF packets, so mesh-side dedup (and any other
+// bridge instance hearing both) treats it as the same message rather than a
+// new one.
+func (s *Session) SendChannelMessageAt(secret16 []byte, hashSize int, scopeKey16 []byte, text string, timestampUnix uint32) error {
+	payload, err := BuildGroupTextPayload(secret16, timestampUnix, 0, text)
 	if err != nil {
 		return err
 	}

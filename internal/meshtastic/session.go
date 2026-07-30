@@ -249,6 +249,15 @@ func (s *Session) handlePacket(pkt *generated.MeshPacket) {
 
 	switch decoded.Decoded.Portnum {
 	case generated.PortNum_TEXT_MESSAGE_APP:
+		if s.myNodeNum != 0 && pkt.From == s.myNodeNum && pkt.RxSnr == 0 && pkt.RxRssi == 0 {
+			// Our own transmission looped back over the client API rather
+			// than heard over the air: a genuine rebroadcast keeps From ==
+			// us too (Meshtastic preserves the original sender), but it
+			// arrives with RF reception metadata set, and a LoRa reception
+			// never reads exactly 0 SNR *and* 0 RSSI. Passing a loopback up
+			// would falsely satisfy retry_on_no_repeat's repeat check.
+			return
+		}
 		msg := TextMessage{
 			From:         pkt.From,
 			FromName:     s.resolveName(pkt.From),
@@ -362,10 +371,19 @@ func (s *Session) SendText(channelName, text string, hopLimit uint32) error {
 	if !ok {
 		return fmt.Errorf("meshtastic: no channel slot on the attached device matches %q", channelName)
 	}
+	return s.SendTextOnChannel(idx, text, hopLimit, NewPacketID())
+}
+
+// SendTextOnChannel is SendText with the channel slot index already resolved
+// and a caller-controlled packet ID (see NewPacketID). Controlling the ID
+// lets a retransmission reuse the original send's ID, so mesh-side
+// duplicate suppression (and any other bridge instance hearing both) treats
+// it as the same packet rather than a new message.
+func (s *Session) SendTextOnChannel(channelIndex uint32, text string, hopLimit, packetID uint32) error {
 	pkt := &generated.MeshPacket{
 		To:       BroadcastAddr,
-		Channel:  idx,
-		Id:       rand.Uint32(),
+		Channel:  channelIndex,
+		Id:       packetID,
 		HopLimit: hopLimit,
 		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
 			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
@@ -373,6 +391,16 @@ func (s *Session) SendText(channelName, text string, hopLimit uint32) error {
 		}},
 	}
 	return s.writeToRadio(&generated.ToRadio{PayloadVariant: &generated.ToRadio_Packet{Packet: pkt}})
+}
+
+// NewPacketID returns a fresh random MeshPacket ID, never 0 (a zero ID would
+// make the firmware assign its own, defeating caller-side ID reuse).
+func NewPacketID() uint32 {
+	for {
+		if id := rand.Uint32(); id != 0 {
+			return id
+		}
+	}
 }
 
 // TextMessages returns a channel of decoded TEXT_MESSAGE_APP packets heard

@@ -155,6 +155,47 @@ func TestSession_SendChannelMessage_EncodesRequestedHashSize(t *testing.T) {
 	}
 }
 
+func TestSession_SendChannelMessageAt_FixedTimestampIsByteIdentical(t *testing.T) {
+	var gotFrames [][]byte
+	s, _, _ := dialOverPipe(t, func(frame []byte) []byte {
+		switch frame[0] {
+		case CmdAppStart:
+			return selfInfoFrame("Node")
+		case CmdSendRawPacket:
+			gotFrames = append(gotFrames, append([]byte(nil), frame...))
+			return []byte{FrameOK}
+		}
+		return nil
+	})
+
+	secret := HashtagChannelSecret("#test")
+	const ts = uint32(1700000000)
+	for i := 0; i < 2; i++ {
+		if err := s.SendChannelMessageAt(secret, 3, nil, "Alice: hi", ts); err != nil {
+			t.Fatalf("SendChannelMessageAt call %d: %v", i+1, err)
+		}
+	}
+
+	if len(gotFrames) != 2 {
+		t.Fatalf("radio saw %d raw-packet frames, want 2", len(gotFrames))
+	}
+	if !bytes.Equal(gotFrames[0], gotFrames[1]) {
+		t.Errorf("retransmit with the same timestamp is not byte-identical:\n first: %x\nsecond: %x", gotFrames[0], gotFrames[1])
+	}
+
+	pkt, err := ParsePacket(gotFrames[0][2:])
+	if err != nil {
+		t.Fatalf("ParsePacket: %v", err)
+	}
+	dec, ok := DecryptGroupText(secret, pkt.Payload)
+	if !ok || dec.Text != "Alice: hi" {
+		t.Fatalf("decrypted text = %q, ok=%v, want %q", dec.Text, ok, "Alice: hi")
+	}
+	if dec.TimestampUnix != ts {
+		t.Errorf("payload timestamp = %d, want the given %d", dec.TimestampUnix, ts)
+	}
+}
+
 func TestSession_SendChannelMessage_AppliesFloodScope(t *testing.T) {
 	var gotFrame []byte
 	s, _, _ := dialOverPipe(t, func(frame []byte) []byte {

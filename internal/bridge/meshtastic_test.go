@@ -305,9 +305,13 @@ func TestBridge_HandleMeshtasticMessage_SuppressesOwnEcho(t *testing.T) {
 	b.SetMeshtasticSession(session)
 
 	b.markOutboundSent(meshtasticEchoKey(1, "Alice: from discord"))
+	// RxSnr/RxRssi set: a genuine over-the-air rebroadcast of our own send
+	// (a client-API loopback without RF metadata is dropped in the session).
 	_ = radio.push(&generated.FromRadio{PayloadVariant: &generated.FromRadio_Packet{Packet: &generated.MeshPacket{
 		From:    1,
 		Channel: 1,
+		RxSnr:   8.5,
+		RxRssi:  -60,
 		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
 			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
 			Payload: []byte("Alice: from discord"),
