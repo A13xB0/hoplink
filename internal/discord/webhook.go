@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func logf(format string, args ...any) {
@@ -69,6 +70,12 @@ func NewWebhookSender(url, name string) *WebhookSender {
 		name:   name,
 		client: &http.Client{Timeout: 10 * time.Second},
 		queue:  make(chan webhookJob, webhookQueueSize),
+	}
+	if w.id == "" {
+		// Config validation should have rejected this; without an ID the
+		// own-post guard (see ID) can't work and the bridge would relay its
+		// own webhook posts back to the mesh.
+		logf("webhook %q: could not parse a webhook ID from the URL — this bridge cannot recognise its own posts", name)
 	}
 	go w.worker()
 	return w
@@ -180,7 +187,13 @@ func (e *rateLimitError) Error() string {
 // responses include the response body for diagnosability.
 func (w *WebhookSender) Send(ctx context.Context, username, avatarURL, content string) error {
 	if len(content) > maxDiscordContentLen {
-		content = content[:maxDiscordContentLen]
+		// Truncate on a rune boundary: a bytewise cut can split a multi-byte
+		// UTF-8 sequence, and Discord rejects invalid UTF-8 payloads.
+		cut := maxDiscordContentLen
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		content = content[:cut]
 	}
 	body, err := json.Marshal(webhookPayload{
 		Content:         content,

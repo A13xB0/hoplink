@@ -190,13 +190,13 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
   - name: other
     discord_channel_id: "1"
-    discord_webhook_url: "https://y"
+    discord_webhook_url: "https://discord.com/api/webhooks/2/toky"
     meshcore:
       enabled: true
       hashtag: "#other"
@@ -214,7 +214,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -232,7 +232,7 @@ meshcore:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -302,6 +302,32 @@ bridges:
 	_, err := Load(writeTemp(t, cfg))
 	if err == nil || !strings.Contains(err.Error(), "must both be set, or both left empty") {
 		t.Fatalf("expected a mismatched-discord-fields error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsUnparseableWebhookURL(t *testing.T) {
+	for _, bad := range []string{
+		"https://discord.com/notwebhooks/1/tok", // no /webhooks/ segment: ID unparseable
+		"http://discord.com/api/webhooks/1/tok", // not https
+		"discord.com/api/webhooks/1/tok",        // no scheme
+	} {
+		cfg := `
+discord:
+  bot_token: "token"
+meshcore:
+  host: 1.2.3.4
+bridges:
+  - name: general
+    discord_channel_id: "123"
+    discord_webhook_url: "` + bad + `"
+    meshcore:
+      enabled: true
+      hashtag: "#general"
+`
+		_, err := Load(writeTemp(t, cfg))
+		if err == nil || !strings.Contains(err.Error(), "discord_webhook_url") {
+			t.Errorf("webhook URL %q: expected a discord_webhook_url error, got %v", bad, err)
+		}
 	}
 }
 
@@ -443,7 +469,7 @@ bridges:
   - name: wip
     enabled: false
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -462,7 +488,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -486,7 +512,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
 `
 	_, err := Load(writeTemp(t, cfg))
 	if err == nil || !strings.Contains(err.Error(), "at least one of meshcore.enabled or meshtastic.enabled") {
@@ -503,7 +529,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
 `
@@ -522,7 +548,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -543,13 +569,13 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
   - name: general
     discord_channel_id: "2"
-    discord_webhook_url: "https://y"
+    discord_webhook_url: "https://discord.com/api/webhooks/2/toky"
     meshcore:
       enabled: true
       hashtag: "#other"
@@ -569,7 +595,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       secret_hex: "not-hex"
@@ -589,7 +615,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       secret_hex: "aabb"
@@ -734,7 +760,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     discord_read_only: true
     meshcore:
       enabled: true
@@ -807,7 +833,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -842,7 +868,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -894,7 +920,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -930,7 +956,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -950,7 +976,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -980,7 +1006,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1004,7 +1030,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1028,7 +1054,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1049,7 +1075,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1069,7 +1095,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1093,7 +1119,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1150,7 +1176,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1174,7 +1200,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1244,7 +1270,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1268,7 +1294,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
       channel_name: "general"
@@ -1370,7 +1396,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshtastic:
       enabled: true
 `
@@ -1391,7 +1417,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     meshcore:
       enabled: true
       hashtag: "#general"
@@ -1418,7 +1444,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     guild_id: "999"
     meshcore:
       enabled: true
@@ -1531,7 +1557,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     sender_format: bogus
     meshcore:
       enabled: true
@@ -1641,7 +1667,7 @@ discord:
 bridges:
   - name: general
     discord_channel_id: "1"
-    discord_webhook_url: "https://x"
+    discord_webhook_url: "https://discord.com/api/webhooks/1/tokx"
     max_message_bytes: -5
     meshcore:
       enabled: true

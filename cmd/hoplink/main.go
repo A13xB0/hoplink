@@ -62,14 +62,6 @@ func main() {
 		if err != nil {
 			fatalf("creating discord bot: %v", err)
 		}
-		if err := bot.Open(); err != nil {
-			fatalf("opening discord gateway: %v", err)
-		}
-		defer func() {
-			if err := bot.Close(); err != nil {
-				logf("closing discord gateway: %v", err)
-			}
-		}()
 	} else {
 		logf("no bridge has a Discord side configured; running as a MeshCore<->Meshtastic relay only")
 	}
@@ -79,6 +71,21 @@ func main() {
 		// Config is already validated in config.Load; reaching here means a
 		// real bug (e.g. a channel secret that stopped resolving).
 		fatalf("building bridge: %v", err)
+	}
+
+	// Open the gateway only after bridge.New has registered the message
+	// handler (bot.OnMessage): opening first both drops any message arriving
+	// in the gap and races discordgo's event goroutine against the handler
+	// write.
+	if bot != nil {
+		if err := bot.Open(); err != nil {
+			fatalf("opening discord gateway: %v", err)
+		}
+		defer func() {
+			if err := bot.Close(); err != nil {
+				logf("closing discord gateway: %v", err)
+			}
+		}()
 	}
 
 	var wg sync.WaitGroup

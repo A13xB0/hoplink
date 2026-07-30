@@ -10,6 +10,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -499,6 +500,29 @@ func validHexRepeaterHash(s string) error {
 	return nil
 }
 
+// validWebhookURL checks that s looks like a real Discord webhook URL —
+// https, and a path shaped /api/webhooks/<id>/<token> whose <id> segment is
+// non-empty. The <id> requirement matters beyond hygiene: discord.
+// WebhookSender parses it (webhookIDFromURL) to recognise this bridge's own
+// webhook posts echoed back by the gateway; a URL it can't parse silently
+// disables that guard and the bridge relays its own posts back to the mesh.
+func validWebhookURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%q is not a valid URL: %v", s, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%q must be an https URL", s)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i, p := range parts {
+		if p == "webhooks" && i+1 < len(parts) && parts[i+1] != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q does not look like a Discord webhook URL (expected .../api/webhooks/<id>/<token>)", s)
+}
+
 // Validate checks the config for structural and semantic errors, returning
 // every problem found (not just the first) so users can fix them all at once.
 func (c *Config) Validate() error {
@@ -634,6 +658,11 @@ func (c *Config) Validate() error {
 		hasWebhook := strings.TrimSpace(b.DiscordWebhookURL) != ""
 		if hasChannel != hasWebhook {
 			errs = append(errs, fmt.Sprintf("bridges[%s]: discord_channel_id and discord_webhook_url must both be set, or both left empty (empty means this bridge has no Discord side)", label))
+		}
+		if hasWebhook {
+			if err := validWebhookURL(strings.TrimSpace(b.DiscordWebhookURL)); err != nil {
+				errs = append(errs, fmt.Sprintf("bridges[%s].discord_webhook_url: %s", label, err))
+			}
 		}
 		// Two bridges sharing a discord_channel_id can't both work: inbound
 		// Discord routing is keyed by channel ID (see bridge.New's byChan), so

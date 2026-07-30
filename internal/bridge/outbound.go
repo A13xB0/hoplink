@@ -39,6 +39,9 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 		return // this bridge's own webhook post, echoed back by Discord
 	}
 	if strings.TrimSpace(msg.Content) == "" {
+		// Typically an attachment-only or embed-only post: there's no text
+		// to put on the mesh. Debug-visible rather than fully silent.
+		b.debugf("discord: dropping message with no text content in channel %q from %s", m.cfg.Name, msg.AuthorName)
 		return
 	}
 	b.debugf("discord: received in channel %q from %s: %q", m.cfg.Name, msg.AuthorName, msg.Content)

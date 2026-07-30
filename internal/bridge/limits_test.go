@@ -95,3 +95,8 @@ func TestBridge_NotifyTooLong_LogsReplyFailureWithoutPanicking(t *testing.T) {
 	// Must not panic even though the notifier itself errors.
 	b.notifyTooLong(discord.IncomingMessage{ChannelID: "c", MessageID: "m"}, 500, 320)
 }
+
+func TestBridge_NotifyTooLong_NilNotifierLogsWithoutPanicking(t *testing.T) {
+	b := &Bridge{} // no notifier wired at all
+	b.notifyTooLong(discord.IncomingMessage{ChannelID: "c", MessageID: "m"}, 500, 320)
+}

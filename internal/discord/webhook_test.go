@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestWebhookIDFromURL(t *testing.T) {
@@ -111,6 +112,31 @@ func TestWebhookSender_Send_TruncatesOversizedContent(t *testing.T) {
 	}
 	if len(gotBody.Content) != maxDiscordContentLen {
 		t.Errorf("content length = %d, want %d", len(gotBody.Content), maxDiscordContentLen)
+	}
+}
+
+func TestWebhookSender_Send_TruncatesOnRuneBoundary(t *testing.T) {
+	var gotBody webhookPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sender := NewWebhookSender(server.URL+"/api/webhooks/1/tok", "test")
+	// 4-byte runes positioned so the 2000-byte cut would land mid-rune.
+	huge := strings.Repeat("x", maxDiscordContentLen-2) + strings.Repeat("🦊", 200)
+	if err := sender.Send(context.Background(), "Bob", "", huge); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !utf8.ValidString(gotBody.Content) {
+		t.Errorf("truncated content is not valid UTF-8: %q...", gotBody.Content[len(gotBody.Content)-8:])
+	}
+	if len(gotBody.Content) > maxDiscordContentLen {
+		t.Errorf("content length = %d, want <= %d", len(gotBody.Content), maxDiscordContentLen)
+	}
+	if len(gotBody.Content) < maxDiscordContentLen-utf8.UTFMax {
+		t.Errorf("content length = %d — truncated more than one rune below the %d limit", len(gotBody.Content), maxDiscordContentLen)
 	}
 }
 
