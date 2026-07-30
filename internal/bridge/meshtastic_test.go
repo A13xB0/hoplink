@@ -366,6 +366,34 @@ func pumpOneTextMessage(t *testing.T, b *Bridge, session *meshtastic.Session) {
 	}
 }
 
+func TestBridge_SendMeshtastic_LogsEachTransmit(t *testing.T) {
+	buf := captureLog(t)
+	session, sentPackets, _ := dialTestMeshtasticSession(t)
+	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
+	b := newTestBridge(m)
+	b.SetMeshtasticSession(session)
+
+	b.sendMeshtastic(m, "Alice", "hello")
+
+	select {
+	case <-sentPackets:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the send to reach the radio")
+	}
+
+	logs := buf.String()
+	for _, want := range []string{
+		`meshtastic channel "general"`,
+		"chunk 1/1",
+		"attempt 1/2",
+		"handed to radio",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("expected transmit log to contain %q, logs were:\n%s", want, logs)
+		}
+	}
+}
+
 func TestBridge_TransmitMeshtastic_RetriesWhenNoRepeatHeard(t *testing.T) {
 	session, sentPackets, _ := dialTestMeshtasticSession(t)
 	m, _ := newTestMeshtasticMapping(t, "general", "chan-1", "general")
@@ -375,7 +403,7 @@ func TestBridge_TransmitMeshtastic_RetriesWhenNoRepeatHeard(t *testing.T) {
 	b.meshtasticRetryOnNoRepeat = true
 
 	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -401,7 +429,7 @@ func TestBridge_TransmitMeshtastic_NoRetryWhenRepeatHeard(t *testing.T) {
 	b.meshtasticRetryOnNoRepeat = true
 
 	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -429,7 +457,7 @@ func TestBridge_TransmitMeshtastic_NoRetryWhenDisabled(t *testing.T) {
 	// b.meshtasticRetryOnNoRepeat left false: the default.
 
 	idx, _ := session.ResolveChannelIndex("general")
-	b.transmitMeshtastic(m, session, idx, "Alice: hello", 0)
+	b.transmitMeshtastic(m, session, idx, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:

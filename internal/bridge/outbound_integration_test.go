@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -274,7 +275,7 @@ func TestBridge_TransmitMeshcore_RetriesWhenNoRepeatHeard(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 0)
+	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -299,7 +300,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 0)
+	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -328,7 +329,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenDisabled(t *testing.T) {
 	b.SetMeshcoreSession(session)
 	// b.meshcoreRetryOnNoRepeat left false: the default.
 
-	b.transmitMeshcore(m, "Alice: hello", 0)
+	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -357,7 +358,7 @@ func TestBridge_TransmitMeshcore_RetriesWhenOnlyRepeatHeardIsFromIgnoredRepeater
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 0)
+	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -392,7 +393,7 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t 
 	b.SetMeshcoreSession(session)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 0)
+	b.transmitMeshcore(m, "Alice: hello", 1, 1, 0)
 
 	select {
 	case <-sentPackets:
@@ -407,6 +408,42 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t 
 	case raw := <-sentPackets:
 		t.Fatalf("expected no retry — the repeat was heard from a non-ignored repeater, got a send: %v", raw)
 	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestBridge_SendMeshcore_LogsEachTransmit(t *testing.T) {
+	buf := captureLog(t)
+	session, sentPackets := dialTestSession(t)
+	m, _ := newTestMapping(t, "general", "#general")
+	b := newTestBridge(m)
+	b.SetMeshcoreSession(session)
+
+	content := strings.Repeat("x", meshcoreMaxChunkBytes*2)
+	wantChunks := len(composeChunks("Alice", content, meshcoreMaxChunkBytes))
+	if wantChunks < 2 {
+		t.Fatalf("test content must split into at least 2 chunks, got %d", wantChunks)
+	}
+
+	b.sendMeshcore(m, "Alice", content)
+
+	for i := 0; i < wantChunks; i++ {
+		select {
+		case <-sentPackets:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for chunk %d/%d", i+1, wantChunks)
+		}
+	}
+
+	logs := buf.String()
+	for _, want := range []string{
+		fmt.Sprintf("chunk 1/%d", wantChunks),
+		fmt.Sprintf("chunk %d/%d", wantChunks, wantChunks),
+		"attempt 1/2",
+		"radio accepted",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("expected transmit log to contain %q, logs were:\n%s", want, logs)
+		}
 	}
 }
 

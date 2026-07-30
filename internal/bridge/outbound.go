@@ -96,11 +96,12 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 	if m.cfg.MeshCore.ReadOnly {
 		return // this bridge's MeshCore side only ever receives; never transmits
 	}
-	for i, chunk := range composeChunks(name, content, meshcoreMaxChunkBytes) {
+	chunks := composeChunks(name, content, meshcoreMaxChunkBytes)
+	for i, chunk := range chunks {
 		if i > 0 && b.meshcoreChunkDelay > 0 {
 			time.Sleep(b.meshcoreChunkDelay)
 		}
-		b.transmitMeshcore(m, chunk, 0)
+		b.transmitMeshcore(m, chunk, i+1, len(chunks), 0)
 	}
 }
 
@@ -112,7 +113,7 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 // that case pending — nothing repeated the message across the mesh, so it's
 // retransmitted once more. attempt is 0 for the original send, 1 for the
 // single allowed retry — purely to stop it recursing past maxRepeatRetries.
-func (b *Bridge) transmitMeshcore(m *mapping, chunk string, attempt int) {
+func (b *Bridge) transmitMeshcore(m *mapping, chunk string, chunkIdx, chunkTotal, attempt int) {
 	session := b.meshcoreSessionRef()
 	if session == nil {
 		logf("bridge %q: meshcore not currently connected; dropping outgoing message", m.cfg.Name)
@@ -124,14 +125,15 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, attempt int) {
 		return session.SendChannelMessage(m.secret, b.hashSize, m.scopeKey, chunk)
 	})
 	if err != nil {
-		logf("sending to meshcore channel %q: %v", m.cfg.Name, err)
+		logf("bridge %q: sending to meshcore channel (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
 		return
 	}
+	logf("bridge %q: sent %d bytes to meshcore channel_hash %#x (chunk %d/%d, attempt %d/%d): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
 	if b.meshcoreRetryOnNoRepeat && attempt < maxRepeatRetries {
 		time.AfterFunc(b.meshcoreRetryWait, func() {
 			if b.echoUnheard(echoKey) {
 				logf("bridge %q: no repeat heard for message on meshcore channel within %s, retransmitting", m.cfg.Name, b.meshcoreRetryWait)
-				b.transmitMeshcore(m, chunk, attempt+1)
+				b.transmitMeshcore(m, chunk, chunkIdx, chunkTotal, attempt+1)
 			}
 		})
 	}
@@ -151,11 +153,12 @@ func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
 		logf("bridge %q: meshtastic channel %q is not configured on the attached device", m.cfg.Name, m.cfg.Meshtastic.ChannelName)
 		return
 	}
-	for i, chunk := range composeChunks(name, content, meshtasticMaxChunkBytes) {
+	chunks := composeChunks(name, content, meshtasticMaxChunkBytes)
+	for i, chunk := range chunks {
 		if i > 0 && b.meshtasticChunkDelay > 0 {
 			time.Sleep(b.meshtasticChunkDelay)
 		}
-		b.transmitMeshtastic(m, session, idx, chunk, 0)
+		b.transmitMeshtastic(m, session, idx, chunk, i+1, len(chunks), 0)
 	}
 }
 
@@ -167,21 +170,22 @@ func (b *Bridge) sendMeshtastic(m *mapping, name, content string) {
 // single allowed retry — purely to stop it recursing past maxRepeatRetries.
 // Mirrors transmitMeshcore (Meshtastic has no ignore_repeat_from equivalent
 // — no per-hop relay identity is available at all, see formatRepeaterPath).
-func (b *Bridge) transmitMeshtastic(m *mapping, session *meshtastic.Session, idx uint32, chunk string, attempt int) {
+func (b *Bridge) transmitMeshtastic(m *mapping, session *meshtastic.Session, idx uint32, chunk string, chunkIdx, chunkTotal, attempt int) {
 	echoKey := meshtasticEchoKey(idx, chunk)
 	b.markOutboundSent(echoKey)
 	err := b.withTxGuard(func() error {
 		return session.SendText(m.cfg.Meshtastic.ChannelName, chunk, b.meshtasticHopLimit)
 	})
 	if err != nil {
-		logf("sending to meshtastic channel %q: %v", m.cfg.Name, err)
+		logf("bridge %q: sending to meshtastic channel %q (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, m.cfg.Meshtastic.ChannelName, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
 		return
 	}
+	logf("bridge %q: sent %d bytes to meshtastic channel %q (index %d, chunk %d/%d, attempt %d/%d): handed to radio", m.cfg.Name, len(chunk), m.cfg.Meshtastic.ChannelName, idx, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
 	if b.meshtasticRetryOnNoRepeat && attempt < maxRepeatRetries {
 		time.AfterFunc(b.meshtasticRetryWait, func() {
 			if b.echoUnheard(echoKey) {
 				logf("bridge %q: no repeat heard for message on meshtastic channel within %s, retransmitting", m.cfg.Name, b.meshtasticRetryWait)
-				b.transmitMeshtastic(m, session, idx, chunk, attempt+1)
+				b.transmitMeshtastic(m, session, idx, chunk, chunkIdx, chunkTotal, attempt+1)
 			}
 		})
 	}
