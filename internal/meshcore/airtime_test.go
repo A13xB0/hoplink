@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -9,8 +10,23 @@ var t0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 func TestLoraTimeOnAirMs_SF7(t *testing.T) {
 	ms := LoraTimeOnAirMs(50, 7, 125000, 5)
-	if ms < 80 || ms > 130 {
-		t.Errorf("SF7/125k/4-5 50B = %.1fms, want ~80-130ms", ms)
+	if ms < 90 || ms > 145 {
+		t.Errorf("SF7/125k/4-5 50B = %.1fms, want ~90-145ms (32-symbol preamble)", ms)
+	}
+}
+
+// Drift pin: MeshCore's preamble is 32 symbols at SF <= 8, 16 above
+// (RadioLibWrapper::preambleLengthForSF) — a fixed 16 undercut every
+// SF8-and-below frame by half its preamble.
+func TestLoraTimeOnAirMs_PreambleIsSFDependent(t *testing.T) {
+	sym8 := math.Exp2(8) / 62500 * 1000
+	if ms := LoraTimeOnAirMs(1, 8, 62500, 5); ms <= (32+4.25)*sym8 {
+		t.Errorf("SF8 airtime %.1fms must exceed its 32-symbol preamble (%.1fms)", ms, (32+4.25)*sym8)
+	}
+	sym9 := math.Exp2(9) / 62500 * 1000
+	ms9 := LoraTimeOnAirMs(1, 9, 62500, 5)
+	if ms9 <= (16+4.25)*sym9 || ms9 >= (32+4.25)*sym9 {
+		t.Errorf("SF9 airtime %.1fms must use the 16-symbol preamble", ms9)
 	}
 }
 

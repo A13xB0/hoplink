@@ -24,10 +24,18 @@ func LoraTimeOnAirMs(payloadBytes int, sf uint8, bwHz float64, crDenom uint8) fl
 	cr -= 4 // 1..4
 	tSymMs := math.Exp2(float64(sf)) / bwHz * 1000.0
 	de := 0
-	if tSymMs > 16.0 { // low data-rate optimization (standard rule)
+	if tSymMs >= 16.0 { // low data-rate optimization (RadioLib: >= 16ms)
 		de = 1
 	}
-	const preambleSymbols = 16.0
+	// MeshCore's preamble is SF-dependent (RadioLibWrapper::
+	// preambleLengthForSF): 32 symbols at SF <= 8, 16 above. A fixed 16
+	// undercounted every SF8-and-below frame by half its preamble
+	// (~130ms at SF8/62.5k), understating channel utilization for
+	// busy_wait pacing.
+	preambleSymbols := 16.0
+	if sf <= 8 {
+		preambleSymbols = 32.0
+	}
 	preambleMs := (preambleSymbols + 4.25) * tSymMs
 	numerator := float64(8*payloadBytes - 4*int(sf) + 28 + 16)
 	payloadSymbols := 8.0
