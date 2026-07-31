@@ -92,6 +92,19 @@ type Meshcore struct {
 	// plausibly arrive, or left waiting so long it stops being useful.
 	// Default 8000 (8s).
 	RetryWaitMs int `yaml:"retry_wait_ms"`
+	// BusyWait, when true (the default), has hoplink listen before talking:
+	// outgoing MeshCore transmissions (and retry_on_no_repeat retransmits)
+	// wait for the channel to go quiet — sensed from the raw RF log's
+	// airtime — before hitting the air, bounded by busy_max_defer_ms. Also
+	// enforces min_tx_spacing_ms between hoplink's own transmissions so a
+	// busy Discord channel can't machine-gun the mesh.
+	BusyWait *bool `yaml:"busy_wait"`
+	// BusyMaxDeferMs bounds how long busy_wait may hold one transmission
+	// waiting for quiet air (milliseconds). Default 8000.
+	BusyMaxDeferMs int `yaml:"busy_max_defer_ms"`
+	// MinTxSpacingMs is the minimum gap between hoplink's own MeshCore
+	// transmissions when busy_wait is on (milliseconds). Default 3000.
+	MinTxSpacingMs int `yaml:"min_tx_spacing_ms"`
 	// IgnoreRepeatFrom is a list of repeater hop hashes (hex, matching the
 	// width hoplink logs them at — e.g. "a1b2c3" for a 3-byte hash, see
 	// formatRepeaterPath) whose relay of one of our own messages should NOT
@@ -114,6 +127,21 @@ func (m Meshcore) ChunkDelay() time.Duration {
 // RetryWait returns RetryWaitMs as a time.Duration.
 func (m Meshcore) RetryWait() time.Duration {
 	return time.Duration(m.RetryWaitMs) * time.Millisecond
+}
+
+// BusyWaitEnabled resolves the busy_wait tri-state: nil (unset) = true.
+func (m Meshcore) BusyWaitEnabled() bool {
+	return m.BusyWait == nil || *m.BusyWait
+}
+
+// BusyMaxDefer returns BusyMaxDeferMs as a time.Duration.
+func (m Meshcore) BusyMaxDefer() time.Duration {
+	return time.Duration(m.BusyMaxDeferMs) * time.Millisecond
+}
+
+// MinTxSpacing returns MinTxSpacingMs as a time.Duration.
+func (m Meshcore) MinTxSpacing() time.Duration {
+	return time.Duration(m.MinTxSpacingMs) * time.Millisecond
 }
 
 // Addr returns "host:port" for net.Dial.
@@ -460,6 +488,12 @@ func (c *Config) applyDefaults() {
 	if c.Meshcore.RetryWaitMs == 0 {
 		c.Meshcore.RetryWaitMs = 8000
 	}
+	if c.Meshcore.BusyMaxDeferMs == 0 {
+		c.Meshcore.BusyMaxDeferMs = 8000
+	}
+	if c.Meshcore.MinTxSpacingMs == 0 {
+		c.Meshcore.MinTxSpacingMs = 3000
+	}
 	if c.Meshtastic.Port == 0 {
 		c.Meshtastic.Port = 4403
 	}
@@ -553,6 +587,12 @@ func (c *Config) Validate() error {
 		}
 		if c.Meshcore.RetryWaitMs < minRetryWaitMs || c.Meshcore.RetryWaitMs > maxRetryWaitMs {
 			errs = append(errs, fmt.Sprintf("meshcore.retry_wait_ms must be between %d and %d (ms), got %d", minRetryWaitMs, maxRetryWaitMs, c.Meshcore.RetryWaitMs))
+		}
+		if c.Meshcore.BusyMaxDeferMs < 0 || c.Meshcore.BusyMaxDeferMs > 60000 {
+			errs = append(errs, fmt.Sprintf("meshcore.busy_max_defer_ms must be between 0 and 60000 (ms), got %d", c.Meshcore.BusyMaxDeferMs))
+		}
+		if c.Meshcore.MinTxSpacingMs < 0 || c.Meshcore.MinTxSpacingMs > 30000 {
+			errs = append(errs, fmt.Sprintf("meshcore.min_tx_spacing_ms must be between 0 and 30000 (ms), got %d", c.Meshcore.MinTxSpacingMs))
 		}
 		for _, h := range c.Meshcore.IgnoreRepeatFrom {
 			if err := validHexRepeaterHash(h); err != nil {

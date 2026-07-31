@@ -1737,3 +1737,58 @@ func TestExampleConfig_ParsesWithPlaceholdersReplaced(t *testing.T) {
 		t.Errorf("unexpected bridges: %+v", cfg.Bridges)
 	}
 }
+
+func TestLoad_BusyWaitDefaultsOn(t *testing.T) {
+	cfg := configWithMeshcore("")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Meshcore.BusyWaitEnabled() {
+		t.Error("BusyWaitEnabled() = false, want true (default)")
+	}
+	if want := 8000 * time.Millisecond; got.Meshcore.BusyMaxDefer() != want {
+		t.Errorf("BusyMaxDefer() = %s, want %s", got.Meshcore.BusyMaxDefer(), want)
+	}
+	if want := 3000 * time.Millisecond; got.Meshcore.MinTxSpacing() != want {
+		t.Errorf("MinTxSpacing() = %s, want %s", got.Meshcore.MinTxSpacing(), want)
+	}
+}
+
+func TestLoad_BusyWaitCanBeDisabled(t *testing.T) {
+	cfg := configWithMeshcore("  busy_wait: false")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Meshcore.BusyWaitEnabled() {
+		t.Error("BusyWaitEnabled() = true, want false")
+	}
+}
+
+func TestLoad_BusyKnobsAreConfigurable(t *testing.T) {
+	cfg := configWithMeshcore("  busy_max_defer_ms: 4000\n  min_tx_spacing_ms: 1500")
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := 4000 * time.Millisecond; got.Meshcore.BusyMaxDefer() != want {
+		t.Errorf("BusyMaxDefer() = %s, want %s", got.Meshcore.BusyMaxDefer(), want)
+	}
+	if want := 1500 * time.Millisecond; got.Meshcore.MinTxSpacing() != want {
+		t.Errorf("MinTxSpacing() = %s, want %s", got.Meshcore.MinTxSpacing(), want)
+	}
+}
+
+func TestLoad_RejectsOutOfRangeBusyKnobs(t *testing.T) {
+	cfg := configWithMeshcore("  busy_max_defer_ms: 999999")
+	if _, err := Load(writeTemp(t, cfg)); err == nil ||
+		!strings.Contains(err.Error(), "meshcore.busy_max_defer_ms") {
+		t.Fatalf("expected a meshcore.busy_max_defer_ms error, got %v", err)
+	}
+	cfg = configWithMeshcore("  min_tx_spacing_ms: -5")
+	if _, err := Load(writeTemp(t, cfg)); err == nil ||
+		!strings.Contains(err.Error(), "meshcore.min_tx_spacing_ms") {
+		t.Fatalf("expected a meshcore.min_tx_spacing_ms error, got %v", err)
+	}
+}

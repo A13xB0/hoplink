@@ -135,6 +135,8 @@ func runMeshcoreWithReconnect(ctx context.Context, cfg *config.Config, br *bridg
 			continue
 		}
 		logf("connected to MeshCore radio %q at %s", info.Name, cfg.Meshcore.Addr())
+		// Radio params feed the channel-activity (busy_wait) airtime math.
+		br.SetMeshcoreRadioParams(info)
 		backoff = time.Second
 
 		runErr := br.RunMeshcore(ctx, session)

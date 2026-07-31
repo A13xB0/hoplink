@@ -21,6 +21,8 @@ import (
 // than once here (siblings sharing this channel may configure different
 // rx_scopes overrides).
 func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
+	// Channel-activity sensing: every heard RF frame contributes its airtime.
+	b.recordHeardRfFrame(lrx.RawLen)
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
 	}

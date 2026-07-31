@@ -98,6 +98,16 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # back-to-back with no extra pause. Raise this if a
                       # receiving node/repeater tends to miss or garble
                       # chunks sent in quick succession.
+  busy_wait: true     # listen before talking: outgoing transmissions (and
+                      # retries) wait for the channel to go quiet — sensed
+                      # from the raw RF log's airtime — before hitting the
+                      # air, and keep min_tx_spacing_ms between hoplink's
+                      # own transmissions. Prevents a lively Discord channel
+                      # from machine-gunning the mesh.
+  busy_max_defer_ms: 8000  # cap on how long busy_wait may hold one
+                      # transmission waiting for quiet air
+  min_tx_spacing_ms: 3000  # minimum gap between hoplink's own transmissions
+                      # while busy_wait is on
   retry_wait_ms: 8000 # how long retry_on_no_repeat waits after sending
                       # before deciding no repeat was heard and retransmitting
                       # once. Must be between 1000 and 120000 (1s-2min):
@@ -142,6 +152,16 @@ meshtastic:               # required only if some bridge has meshtastic.enabled:
                       # a message split across multiple Meshtastic chunks —
                       # see meshcore.chunk_delay_ms above; same idea, applied
                       # independently to the Meshtastic side.
+  busy_wait: true     # listen before talking: outgoing transmissions (and
+                      # retries) wait for the channel to go quiet — sensed
+                      # from the raw RF log's airtime — before hitting the
+                      # air, and keep min_tx_spacing_ms between hoplink's
+                      # own transmissions. Prevents a lively Discord channel
+                      # from machine-gunning the mesh.
+  busy_max_defer_ms: 8000  # cap on how long busy_wait may hold one
+                      # transmission waiting for quiet air
+  min_tx_spacing_ms: 3000  # minimum gap between hoplink's own transmissions
+                      # while busy_wait is on
   retry_wait_ms: 8000 # how long retry_on_no_repeat waits after sending
                       # before deciding no repeat was heard — see
                       # meshcore.retry_wait_ms above; same 1000-120000 (ms)

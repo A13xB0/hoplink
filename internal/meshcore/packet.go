@@ -160,6 +160,9 @@ type LogRxData struct {
 	SNR    float64 // dB
 	RSSI   int8
 	Packet Packet
+	// RawLen is the RF packet's total byte count (frame minus the 3-byte
+	// 0x88 envelope) — feeds the channel-activity airtime estimate.
+	RawLen int
 }
 
 // ParseLogRxData parses a raw 0x88 push frame into its SNR/RSSI header and
@@ -178,5 +181,6 @@ func ParseLogRxData(frame []byte) (LogRxData, error) {
 		SNR:    float64(snrRaw) / 4.0,
 		RSSI:   rssi,
 		Packet: pkt,
+		RawLen: len(frame) - 3,
 	}, nil
 }

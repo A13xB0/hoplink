@@ -90,6 +90,10 @@ type Bridge struct {
 	meshcoreChunkDelay        time.Duration // meshcore.chunk_delay_ms — extra pause between chunks of a split message
 	meshtasticChunkDelay      time.Duration // meshtastic.chunk_delay_ms — extra pause between chunks of a split message
 	meshcoreRetryWait         time.Duration // meshcore.retry_wait_ms — how long transmitMeshcore waits for a repeat before retrying
+	busyWaitEnabled           bool          // meshcore.busy_wait — listen-before-talk on MeshCore TX
+	busyMaxDefer              time.Duration // meshcore.busy_max_defer_ms — cap per-TX quiet-air wait
+	minTxSpacing              time.Duration // meshcore.min_tx_spacing_ms — gap between our own TXs
+	pacing                    pacingState   // airtime monitor + radio params (see pacing.go)
 	meshtasticRetryWait       time.Duration // meshtastic.retry_wait_ms — how long transmitMeshtastic waits for a repeat before retrying
 	byName                    []*mapping
 	byChan                    map[string]*mapping // Discord channel ID -> mapping
@@ -196,6 +200,9 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		meshcoreChunkDelay:        cfg.Meshcore.ChunkDelay(),
 		meshtasticChunkDelay:      cfg.Meshtastic.ChunkDelay(),
 		meshcoreRetryWait:         cfg.Meshcore.RetryWait(),
+		busyWaitEnabled:           cfg.Meshcore.BusyWaitEnabled(),
+		busyMaxDefer:              cfg.Meshcore.BusyMaxDefer(),
+		minTxSpacing:              cfg.Meshcore.MinTxSpacing(),
 		meshtasticRetryWait:       cfg.Meshtastic.RetryWait(),
 		txGuardEnabled:            cfg.Coexistence.Enabled(),
 		txGuardGap:                cfg.Coexistence.GapDuration(),
@@ -262,6 +269,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 // Split out of New so test-constructed Bridge literals share it.
 func (b *Bridge) initRuntime() {
 	b.closedCh = make(chan struct{})
+	b.pacing.monitor = meshcore.NewActivityMonitor()
 	b.retryTimers = make(map[*time.Timer]struct{})
 	b.relayQ = make(chan func(), relayQueueCap)
 	go func() {

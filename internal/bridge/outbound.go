@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -132,6 +133,16 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 		return
 	}
 	echoKey := meshcoreEchoKey(m.channelHash, chunk)
+	// Listen-before-talk: wait for quiet air (and our own min TX spacing)
+	// before hitting the channel — bounded, so a message is never held
+	// hostage. Retries get a longer cap: they're already late, and
+	// retransmitting into the congestion that swallowed the original copy
+	// helps nobody.
+	deferCap := b.busyMaxDefer
+	if attempt > 0 {
+		deferCap += 2 * time.Second
+	}
+	b.waitForQuietAir(deferCap, fmt.Sprintf("bridge %q chunk %d/%d", m.cfg.Name, chunkIdx, chunkTotal))
 	b.markOutboundSent(echoKey, m.ignoreRepeatFrom...)
 	err := b.withTxGuard(func() error {
 		return session.SendChannelMessageAt(m.secret, b.hashSize, m.scopeKey, chunk, tsUnix)
@@ -141,9 +152,13 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 		logfMeshcore("TX bridge %q: send failed (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
 		return
 	}
+	b.noteOwnTx(len(chunk))
 	logfMeshcore("TX bridge %q: sent %d bytes to channel_hash %#x (chunk %d/%d, attempt %d/%d): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1)
 	if b.meshcoreRetryOnNoRepeat && attempt < maxRepeatRetries {
-		b.afterFunc(b.meshcoreRetryWait, func() {
+		// Jittered ±20% so two nodes that collided once don't re-collide
+		// every retry round.
+		wait := time.Duration(float64(b.meshcoreRetryWait) * (0.8 + 0.4*rand.Float64()))
+		b.afterFunc(wait, func() {
 			if b.echoUnheard(echoKey) {
 				logfMeshcore("TX bridge %q: no repeat heard within %s, retransmitting", m.cfg.Name, b.meshcoreRetryWait)
 				b.transmitMeshcore(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1)
