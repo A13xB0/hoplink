@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/hex"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,14 +42,15 @@ func waitForLog(t *testing.T, buf *syncBuffer, substr string) string {
 	return ""
 }
 
-func summaryLine(t *testing.T, logs string) string {
+func summaryLine(t *testing.T, logs string, raw []byte) string {
 	t.Helper()
+	tag := "(packet " + mustPacketHash(t, raw) + ")"
 	for _, l := range strings.Split(logs, "\n") {
-		if strings.Contains(l, "(packet ") && (strings.Contains(l, " repeated") || strings.Contains(l, "NOT confirmed")) {
+		if strings.Contains(l, tag) && (strings.Contains(l, " repeated") || strings.Contains(l, "NOT confirmed")) {
 			return l
 		}
 	}
-	t.Fatalf("no delivery summary in logs:\n%s", logs)
+	t.Fatalf("no delivery summary for %s in logs:\n%s", tag, logs)
 	return ""
 }
 
@@ -61,20 +63,33 @@ func newDeliveryTestBridge(t *testing.T) (*Bridge, *mapping, chan []byte, chan w
 	b.SetMeshcoreSession(session)
 	b.hashSize = 3
 	b.meshcoreRetryWait = 100 * time.Millisecond
+	// Stop this bridge's summary/retry timers before the next test starts
+	// capturing the (global) log. Registered after the test's captureLog, so
+	// it runs before that capture is restored.
+	t.Cleanup(b.Close)
 	return b, m, sent, posts
+}
+
+// testTS hands each send a distinct payload timestamp, so every test's
+// packets hash differently and a summary line can be attributed to the
+// test's own packet (see summaryLine).
+var testTS atomic.Uint32
+
+func nextTS() uint32 {
+	return 1_700_000_000 + testTS.Add(1)
 }
 
 func TestDelivery_CountsEveryCopyAndEveryRepeaterInItsPath(t *testing.T) {
 	buf := captureLog(t)
 	b, m, sent, posts := newDeliveryTestBridge(t)
 
-	b.transmitMeshcore(m, "Alice: hello", 1_700_000_000, 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", nextTS(), 1, 1, 0)
 	raw := <-sent
 	b.handleMeshcorePacket(relayedCopy(t, raw, "a1a1a1"))
 	b.handleMeshcorePacket(relayedCopy(t, raw, "a1a1a1", "b2b2b2", "c3c3c3"))
 	b.handleMeshcorePacket(relayedCopy(t, raw, "d4d4d4"))
 
-	line := summaryLine(t, waitForLog(t, buf, "(packet "+mustPacketHash(t, raw)+") repeated"))
+	line := summaryLine(t, waitForLog(t, buf, "(packet "+mustPacketHash(t, raw)+") repeated"), raw)
 	for _, want := range []string{"3 copies", "4 repeaters", "a1a1a1, b2b2b2, c3c3c3, d4d4d4", "after 1 attempt"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary %q missing %q", line, want)
@@ -87,9 +102,9 @@ func TestDelivery_ReportsNotConfirmedWhenNothingHeard(t *testing.T) {
 	buf := captureLog(t)
 	b, m, sent, _ := newDeliveryTestBridge(t)
 
-	b.transmitMeshcore(m, "Alice: hello", 1_700_000_000, 1, 1, 0)
-	<-sent
-	line := summaryLine(t, waitForLog(t, buf, "NOT confirmed"))
+	b.transmitMeshcore(m, "Alice: hello", nextTS(), 1, 1, 0)
+	raw := <-sent
+	line := summaryLine(t, waitForLog(t, buf, "(packet "+mustPacketHash(t, raw)+") NOT confirmed"), raw)
 	if !strings.Contains(line, "no relayed copy heard after 1 attempt") {
 		t.Errorf("summary = %q", line)
 	}
@@ -100,11 +115,11 @@ func TestDelivery_IgnoredRepeatersDontConfirm(t *testing.T) {
 	b, m, sent, _ := newDeliveryTestBridge(t)
 	m.ignoreRepeatFrom = [][]byte{{0xa1, 0xa1, 0xa1}}
 
-	b.transmitMeshcore(m, "Alice: hello", 1_700_000_000, 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", nextTS(), 1, 1, 0)
 	raw := <-sent
 	b.handleMeshcorePacket(relayedCopy(t, raw, "a1a1a1"))
 
-	line := summaryLine(t, waitForLog(t, buf, "NOT confirmed"))
+	line := summaryLine(t, waitForLog(t, buf, "(packet "+mustPacketHash(t, raw)+") NOT confirmed"), raw)
 	if !strings.Contains(line, "heard only via ignored repeaters [a1a1a1]") {
 		t.Errorf("summary = %q", line)
 	}
@@ -115,7 +130,7 @@ func TestDelivery_RetryIsOneRecordWithTwoAttempts(t *testing.T) {
 	b, m, sent, _ := newDeliveryTestBridge(t)
 	b.meshcoreRetryOnNoRepeat = true
 
-	b.transmitMeshcore(m, "Alice: hello", 1_700_000_000, 1, 1, 0)
+	b.transmitMeshcore(m, "Alice: hello", nextTS(), 1, 1, 0)
 	raw := <-sent
 	retry := <-sent // nothing heard: retransmitted, byte-identical
 	if string(raw) != string(retry) {
@@ -123,11 +138,14 @@ func TestDelivery_RetryIsOneRecordWithTwoAttempts(t *testing.T) {
 	}
 	b.handleMeshcorePacket(relayedCopy(t, retry, "b2b2b2"))
 
-	logs := waitForLog(t, buf, "after 2 attempts")
+	logs := waitForLog(t, buf, "(packet "+mustPacketHash(t, raw)+") repeated")
 	if n := strings.Count(logs, "(packet "+mustPacketHash(t, raw)+") repeated"); n != 1 {
 		t.Errorf("want exactly one summary for the retried packet, got %d:\n%s", n, logs)
 	}
-	if strings.Contains(logs, "NOT confirmed") {
+	if !strings.Contains(logs, "after 2 attempts") {
+		t.Errorf("summary should count both attempts:\n%s", logs)
+	}
+	if strings.Contains(logs, "(packet "+mustPacketHash(t, raw)+") NOT confirmed") {
 		t.Errorf("the first attempt should not be reported on its own before the retry:\n%s", logs)
 	}
 }
