@@ -36,7 +36,7 @@ const selfEchoTTL = 10 * time.Second
 // never being heard repeated — one retry, not an unbounded loop.
 const maxRepeatRetries = 1
 
-// relayQueueCap bounds the mesh->mesh relay queue (see Bridge.relayQ) —
+// relayQueueCap bounds the outbound mesh send queue (see Bridge.relayQ) —
 // matching the rx channels' own drop-when-stalled discipline rather than
 // letting a wedged radio grow an unbounded backlog.
 const relayQueueCap = 64
@@ -136,13 +136,23 @@ type Bridge struct {
 	// retryTimers tracks outstanding retry_on_no_repeat timers (see
 	// afterFunc) so Close can stop them. Guarded by mu.
 	retryTimers map[*time.Timer]struct{}
-	// relayQ carries mesh->mesh relay sends to a single worker goroutine, so
-	// the RunMeshcore/RunMeshtastic rx consumer loops never block on chunk
-	// delays, the TX guard gap, or a radio command timeout — their inbound
-	// channels are only ~32 deep and drop packets when the consumer stalls.
-	// One worker keeps chunk ordering. Discord-origin sends stay inline: they
-	// already run on discordgo's handler goroutine, not an rx consumer.
+	// relayQ carries every outbound mesh send — mesh->mesh relays and
+	// Discord->mesh messages alike — to a single worker goroutine. That
+	// keeps the RunMeshcore/RunMeshtastic rx consumer loops from ever
+	// blocking on chunk delays, busy_wait, the TX guard gap, or a radio
+	// command timeout (their inbound channels are only ~32 deep and drop
+	// packets when the consumer stalls), and it makes messages go out in
+	// arrival order with their chunks never interleaved. discordgo runs each
+	// event handler on its own goroutine, so sending Discord messages inline
+	// let two messages posted close together race: chunks interleaved, and
+	// both could pass the min_tx_spacing check at once.
 	relayQ chan func()
+	// meshcoreTxMu serialises transmitMeshcore calls — the send worker's
+	// against retry_on_no_repeat timers firing on their own goroutines — so
+	// listen-before-talk and min_tx_spacing are checked and acted on
+	// atomically: no second transmission can slip into the gap between one
+	// send's "air is quiet" decision and its actual transmit.
+	meshcoreTxMu sync.Mutex
 }
 
 // pendingEcho tracks one outbound send awaiting either self-echo suppression
@@ -336,14 +346,15 @@ func (b *Bridge) afterFunc(d time.Duration, fn func()) {
 	b.retryTimers[t] = struct{}{}
 }
 
-// enqueueRelay hands a mesh->mesh relay send to the single relay worker,
-// dropping it (with a log, mirroring the rx channels' overflow behaviour)
-// if the queue is full — a stalled radio must not wedge inbound consumption.
+// enqueueRelay hands an outbound mesh send (a mesh->mesh relay or a
+// Discord->mesh message) to the single send worker, dropping it (with a
+// log, mirroring the rx channels' overflow behaviour) if the queue is full —
+// a stalled radio must not wedge inbound consumption or the Discord gateway.
 func (b *Bridge) enqueueRelay(bridgeName string, send func()) {
 	select {
 	case b.relayQ <- send:
 	default:
-		logf("bridge %q: dropping mesh-to-mesh relay: relay queue is full (radio stalled or badly backlogged)", bridgeName)
+		logf("bridge %q: dropping outgoing mesh send: send queue is full (radio stalled or badly backlogged)", bridgeName)
 	}
 }
 

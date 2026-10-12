@@ -102,7 +102,7 @@ func TestBridge_EnqueueRelay_DropsWhenFullAndLogs(t *testing.T) {
 		b.enqueueRelay("general", func() {})
 	}
 
-	if !strings.Contains(buf.String(), "relay queue is full") {
+	if !strings.Contains(buf.String(), "send queue is full") {
 		t.Errorf("expected an overflow drop log, logs were:\n%s", buf.String())
 	}
 }

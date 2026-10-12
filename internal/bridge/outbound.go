@@ -62,11 +62,18 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 		return
 	}
 
-	if m.meshcoreEnabled {
-		b.sendMeshcore(m, senderName, msg.Content)
-	}
-	if m.meshtasticEnabled {
-		b.sendMeshtastic(m, senderName, msg.Content)
+	// Mesh sends go through the single send worker (see Bridge.relayQ), so
+	// concurrent Discord messages go out in order and never interleave.
+	if m.meshcoreEnabled || m.meshtasticEnabled {
+		content := msg.Content
+		b.enqueueRelay(m.cfg.Name, func() {
+			if m.meshcoreEnabled {
+				b.sendMeshcore(m, senderName, content)
+			}
+			if m.meshtasticEnabled {
+				b.sendMeshtastic(m, senderName, content)
+			}
+		})
 	}
 	b.relayDiscordToSiblings(m, msg.AuthorName, msg.Content)
 }
@@ -127,6 +134,8 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 // messages — so listening for our own packet re-flooded genuinely is the
 // best available confirmation.)
 func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int) {
+	b.meshcoreTxMu.Lock() // see Bridge.meshcoreTxMu
+	defer b.meshcoreTxMu.Unlock()
 	session := b.meshcoreSessionRef()
 	if session == nil {
 		logfMeshcore("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
