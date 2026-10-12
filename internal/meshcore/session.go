@@ -403,9 +403,21 @@ func (s *Session) SendChannelMessage(secret16 []byte, hashSize int, scopeKey16 [
 // bridge instance hearing both) treats it as the same message rather than a
 // new one.
 func (s *Session) SendChannelMessageAt(secret16 []byte, hashSize int, scopeKey16 []byte, text string, timestampUnix uint32) error {
-	payload, err := BuildGroupTextPayload(secret16, timestampUnix, 0, text)
+	pkt, err := BuildChannelPacket(secret16, hashSize, scopeKey16, text, timestampUnix)
 	if err != nil {
 		return err
+	}
+	return s.SendPacket(pkt)
+}
+
+// BuildChannelPacket composes (without sending) the flood-routed GRP_TXT
+// packet SendChannelMessageAt would transmit — see its doc comment for
+// hashSize and scopeKey16. Deterministic for fixed inputs, so callers can
+// compute its PacketHash up front to recognise copies of it relayed back.
+func BuildChannelPacket(secret16 []byte, hashSize int, scopeKey16 []byte, text string, timestampUnix uint32) (Packet, error) {
+	payload, err := BuildGroupTextPayload(secret16, timestampUnix, 0, text)
+	if err != nil {
+		return Packet{}, err
 	}
 
 	pkt := Packet{
@@ -418,17 +430,21 @@ func (s *Session) SendChannelMessageAt(secret16 []byte, hashSize int, scopeKey16
 	if len(scopeKey16) > 0 {
 		code0, err := CalcTransportCode(scopeKey16, PayloadTypeGrpTxt, payload)
 		if err != nil {
-			return err
+			return Packet{}, err
 		}
 		pkt.Route = RouteFlood.WithTransportCodes()
 		pkt.TransportCodes = EncodeTransportCodes(code0, 0)
 	}
+	return pkt, nil
+}
 
-	packet, err := BuildPacket(pkt)
+// SendPacket serialises p and transmits it via SendRawPacket.
+func (s *Session) SendPacket(p Packet) error {
+	raw, err := BuildPacket(p)
 	if err != nil {
 		return err
 	}
-	return s.SendRawPacket(packet, 0)
+	return s.SendRawPacket(raw, 0)
 }
 
 // ChannelMessage is a channel/group text message retrieved via

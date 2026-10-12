@@ -126,6 +126,10 @@ type Bridge struct {
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
 	recentOutbound map[string]pendingEcho
+	// deliveries tracks our own MeshCore sends by packet hash, recording
+	// every relayed copy heard (see delivery.go). Lazily created; guarded
+	// by mu; swept after inboundDedupTTL.
+	deliveries map[meshcore.PacketHash]*delivery
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
@@ -565,6 +569,11 @@ func (b *Bridge) sweep() {
 	for k, pending := range b.recentOutbound {
 		if now.Sub(pending.sentAt) > ttl {
 			delete(b.recentOutbound, k)
+		}
+	}
+	for h, d := range b.deliveries {
+		if now.Sub(d.firstSent) > inboundDedupTTL {
+			delete(b.deliveries, h)
 		}
 	}
 }

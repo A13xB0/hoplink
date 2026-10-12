@@ -181,6 +181,26 @@ client (and the companion apps' own UI) expects it there too. If slot 0
 already holds a different, non-empty channel, hoplink refuses to overwrite
 it and falls back to raw-log-only reception for that bridge (logged).
 
+### MeshCore: delivery summary
+
+GRP_TXT channel messages have no ack, so the only evidence a message made it
+onto the mesh is hearing repeaters relay it back. Every MeshCore message
+hoplink sends is tracked by its packet hash (the same 8-byte identity
+repeaters use for their own duplicate suppression, and that
+[CoreScope](https://github.com/Kpa-clawbot/CoreScope) shows as `hash`), and
+every relayed copy the radio hears is recorded — including **every** repeater
+in that copy's path, not just the nearest one. Once the send has settled
+(after `retry_wait_ms`, and after the retransmit if `retry_on_no_repeat`
+fired), one summary line is logged per chunk:
+
+```
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 3f9c0a6e1b2d7c48) repeated: 3 copies heard via 4 repeaters [a1b2c3, d4e5f6, 0919aa, 77e0c1] after 1 attempt
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 9a01b2c3d4e5f607) NOT confirmed: no relayed copy heard after 2 attempts
+```
+
+Repeaters on `ignore_repeat_from` are listed separately and don't count.
+Set `debug: true` to also log each individual copy and its path.
+
 ## Requirements
 
 - Go 1.26+ (see `go.mod`)

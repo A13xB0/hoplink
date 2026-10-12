@@ -1,7 +1,9 @@
 package meshcore
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -18,6 +20,45 @@ type Packet struct {
 	Path           []byte // hopCount * hashSize bytes
 	HashSize       int    // bytes per hop hash (1-4); meaningful only if len(Path) > 0
 	Payload        []byte
+}
+
+// PacketHash is MeshCore's 8-byte packet identity: SHA-256 over the payload
+// type and payload, truncated (firmware Packet::calculatePacketHash,
+// MAX_HASH_SIZE). It excludes the route type, transport codes and path, so
+// every relayed copy of one transmission — whichever repeaters it passed
+// through — hashes the same; repeaters use it to drop packets they've
+// already forwarded. CoreScope's packet "hash" is the same value as 16 hex
+// characters (see String).
+type PacketHash [8]byte
+
+// String renders h as 16 lowercase hex characters.
+func (h PacketHash) String() string {
+	return hex.EncodeToString(h[:])
+}
+
+// Hash returns p's PacketHash. Not valid for TRACE packets, whose firmware
+// hash also covers path_len — hoplink never sends or tracks those.
+func (p Packet) Hash() PacketHash {
+	sum := sha256.New()
+	sum.Write([]byte{byte(p.PayloadType)})
+	sum.Write(p.Payload)
+	var h PacketHash
+	copy(h[:], sum.Sum(nil))
+	return h
+}
+
+// Hops splits p's path into its per-repeater hop hashes, in the order the
+// repeaters appended them (nearest-to-receiver last). Every hop listed
+// relayed this copy. Returns nil for an empty or malformed path.
+func (p Packet) Hops() [][]byte {
+	if p.HashSize <= 0 || len(p.Path) == 0 || len(p.Path)%p.HashSize != 0 {
+		return nil
+	}
+	hops := make([][]byte, 0, len(p.Path)/p.HashSize)
+	for i := 0; i < len(p.Path); i += p.HashSize {
+		hops = append(hops, p.Path[i:i+p.HashSize])
+	}
+	return hops
 }
 
 // MatchesAnyScope reports whether p's transport code matches one of

@@ -26,6 +26,10 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
 	}
+	// Delivery tracking: a relayed copy of one of our own sends. Recorded
+	// here, then falls through to the normal path, whose self-echo / dedup
+	// checks keep it from being reposted.
+	b.observeOwnCopy(lrx.Packet)
 
 	var dec meshcore.GroupTextDecrypt
 	var channelHash byte
