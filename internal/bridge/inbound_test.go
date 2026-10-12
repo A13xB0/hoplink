@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,13 +18,44 @@ import (
 
 // captureLog redirects the standard logger's output to a buffer for the
 // duration of the test, restoring it on cleanup.
-func captureLog(t *testing.T) *bytes.Buffer {
+func captureLog(t *testing.T) *syncBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	orig := log.Writer()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(orig) })
-	return &buf
+	return buf
+}
+
+// syncBuffer is a bytes.Buffer safe to read while background goroutines
+// (retry/delivery timers) are still logging into it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func (s *syncBuffer) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Len()
+}
+
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf.Reset()
 }
 
 // newTestMapping builds a mapping backed by a real httptest webhook server,
