@@ -23,13 +23,17 @@ import (
 
 // inboundDedupTTL bounds how long an inbound-message dedup key is
 // remembered to suppress duplicate delivery of the same flooded packet
-// arriving via multiple relay hops.
-const inboundDedupTTL = 60 * time.Second
+// arriving via multiple relay hops. Our own outbound packets are seeded into
+// the same set at send time (see markOwnPacket), so this is also how long a
+// late echo of something we sent is still recognised as ours. Generous on
+// purpose: a multi-hop flood on a busy, duty-cycled mesh can straggle back
+// well after a minute, and each entry is only a short string.
+const inboundDedupTTL = 10 * time.Minute
 
 // selfEchoTTL is the floor for how long a just-sent outbound-echo key is
-// remembered — both to suppress our own outbound message being re-delivered
-// to Discord after the mesh floods it back to us, and (see
-// effectiveSelfEchoTTL) as the minimum retry_on_no_repeat pending window.
+// tracked for retry_on_no_repeat accounting (see effectiveSelfEchoTTL).
+// Suppressing our own echo from being reposted no longer depends on this —
+// see markOwnPacket.
 const selfEchoTTL = 10 * time.Second
 
 // maxRepeatRetries caps how many times a single message is retransmitted for

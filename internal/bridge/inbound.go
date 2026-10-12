@@ -122,7 +122,7 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
+		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed or sent this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
 		return
 	}
 
@@ -225,7 +225,7 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugMeshtastic("RX suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
+		b.debugMeshtastic("RX suppressing %q on channel index %d as a duplicate delivery (already relayed or sent this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
 		return
 	}
 
@@ -335,6 +335,22 @@ func (b *Bridge) isDuplicateInbound(key string) bool {
 	}
 	b.recentInbound[key] = time.Now()
 	return false
+}
+
+// markOwnPacket records the dedup key of a packet we are about to transmit
+// in recentInbound, exactly as if it had already been delivered once. Any
+// copy the mesh floods back to us — however late, via either MeshCore
+// inbound path, and regardless of what retry_on_no_repeat's pending-echo
+// accounting (recentOutbound) has done with it in the meantime — then hits
+// the ordinary duplicate check and is never reposted or relayed as new
+// content. recentOutbound alone can't guarantee that: its entries are
+// consumed by the first echo or by the retry check and expire after
+// selfEchoTTL, after which a straggling echo looked like a fresh message.
+// Re-marking (a retransmit) refreshes the entry's age.
+func (b *Bridge) markOwnPacket(dedupKey string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recentInbound[dedupKey] = time.Now()
 }
 
 // selfEchoOutcome classifies what happened when a delivered message matched

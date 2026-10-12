@@ -143,6 +143,7 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 		deferCap += 2 * time.Second
 	}
 	b.waitForQuietAir(deferCap, fmt.Sprintf("bridge %q chunk %d/%d", m.cfg.Name, chunkIdx, chunkTotal))
+	b.markOwnPacket(meshcoreDedupKey(m.channelHash, tsUnix, chunk))
 	b.markOutboundSent(echoKey, m.ignoreRepeatFrom...)
 	err := b.withTxGuard(func() error {
 		return session.SendChannelMessageAt(m.secret, b.hashSize, m.scopeKey, chunk, tsUnix)
@@ -217,6 +218,7 @@ func (b *Bridge) transmitMeshtastic(m *mapping, chunk string, pktID uint32, chun
 		return
 	}
 	echoKey := meshtasticEchoKey(idx, chunk)
+	b.markOwnPacket(meshtasticDedupKey(idx, pktID, chunk))
 	b.markOutboundSent(echoKey)
 	err := b.withTxGuard(func() error {
 		return session.SendTextOnChannel(idx, chunk, b.meshtasticHopLimit, pktID)
