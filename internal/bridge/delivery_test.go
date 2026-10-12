@@ -144,7 +144,7 @@ func TestDelivery_UnrelatedPacketsAreNotTracked(t *testing.T) {
 func TestDelivery_SweepForgetsOldRecords(t *testing.T) {
 	b, m, _, _ := newDeliveryTestBridge(t)
 	var h meshcore.PacketHash
-	b.trackDelivery(h, m, 1, 1)
+	b.trackDelivery(h, m, 1, 1, nil)
 	b.mu.Lock()
 	b.deliveries[h].firstSent = time.Now().Add(-2 * inboundDedupTTL)
 	b.mu.Unlock()

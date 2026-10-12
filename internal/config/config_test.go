@@ -1850,3 +1850,20 @@ func TestLoad_DeliveryRulePerBridgeOverride(t *testing.T) {
 		t.Errorf("no override: ResolvedMinRepeaters = %d, want the global 1", got)
 	}
 }
+
+func TestLoad_DeliveryReactionsDefaultOffAndConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Discord.DeliveryReactions {
+		t.Error("delivery_reactions should default to false")
+	}
+	cfg, err = Load(writeTemp(t, configWithDiscord(`  delivery_reactions: true`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Discord.DeliveryReactions {
+		t.Error("delivery_reactions: true not honoured")
+	}
+}

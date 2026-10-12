@@ -32,17 +32,18 @@ type delivery struct {
 	chunkTotal int
 	firstSent  time.Time
 	attempts   int
-	copies     int      // relayed copies heard on the raw log
-	repeaters  []string // distinct hop hashes (hex) seen in any copy's path, first-heard order
-	ignore     [][]byte // the sending mapping's meshcore.ignore_repeat_from
-	success    []string // the sending mapping's meshcore.success_repeaters (lowercase hex)
-	minRepeat  int      // the sending mapping's meshcore.min_repeaters
-	reported   bool     // summary already logged; later copies only count
+	copies     int             // relayed copies heard on the raw log
+	repeaters  []string        // distinct hop hashes (hex) seen in any copy's path, first-heard order
+	ignore     [][]byte        // the sending mapping's meshcore.ignore_repeat_from
+	success    []string        // the sending mapping's meshcore.success_repeaters (lowercase hex)
+	minRepeat  int             // the sending mapping's meshcore.min_repeaters
+	receipt    *discordReceipt // originating Discord message's delivery reactions; nil if none / once settled
+	reported   bool            // summary already logged; later copies only count
 }
 
 // trackDelivery records an attempt to send the packet hashed h — creating
 // the record on the first attempt.
-func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int) {
+func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int, rc *discordReceipt) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.deliveries == nil {
@@ -58,6 +59,7 @@ func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chun
 			ignore:     m.ignoreRepeatFrom,
 			success:    m.successRepeaters,
 			minRepeat:  m.minRepeaters,
+			receipt:    rc,
 		}
 		b.deliveries[h] = d
 	}
@@ -195,8 +197,11 @@ func (b *Bridge) reportDelivery(h meshcore.PacketHash) {
 	}
 	d.reported = true
 	line := d.summary(h)
+	rc, confirmed := d.receipt, d.confirmed()
+	d.receipt = nil
 	b.mu.Unlock()
 	logfMeshcore("%s", line)
+	rc.settle(confirmed)
 }
 
 // summary renders d as a log line. Caller holds b.mu.

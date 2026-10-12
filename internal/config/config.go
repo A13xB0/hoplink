@@ -253,6 +253,12 @@ func (m Meshtastic) ResolvedHopLimit() int {
 type Discord struct {
 	BotToken   string `yaml:"bot_token"`
 	NameSource string `yaml:"name_source"` // "display_name" (default) or "username"
+	// DeliveryReactions, when true, has the bot react to each Discord
+	// message it relays onto MeshCore with its delivery status: 📡 once the
+	// radio accepts it, then ✅ when every chunk's delivery is confirmed (see
+	// meshcore.min_repeaters / success_repeaters) or ⚠️ when it isn't. Needs
+	// the bot to have the Add Reactions permission. Default false.
+	DeliveryReactions bool `yaml:"delivery_reactions"`
 }
 
 // PreferDisplayName reports whether NameSource resolves to using the
