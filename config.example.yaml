@@ -82,9 +82,10 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # inbound path (see README) — has no effect on the
                       # device-side sync path, which carries no scope info.
   retry_on_no_repeat: false  # when true, retransmit an outgoing meshcore
-                      # message once if we never hear it repeated back by the
-                      # mesh (no self-echo observed) within a few seconds of
-                      # sending — a signal no repeater picked it up. Disabled
+                      # message (up to max_retries times) if its delivery
+                      # isn't confirmed — see success_repeaters/min_repeaters
+                      # below; by default, no repeater was heard relaying it —
+                      # within retry_wait_ms of sending. Disabled
                       # by default: a missing repeat is also normal on a
                       # small/direct-route mesh, and this doubles airtime for
                       # every message it triggers on. When it IS heard, a log
@@ -127,6 +128,19 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # log line. This is the DEFAULT for every bridge;
                       # override per-bridge with meshcore.ignore_repeat_from
                       # below.
+  success_repeaters: []  # optional list of repeater hop hashes (hex) — when
+                      # set, a message only counts as DELIVERED once one of
+                      # these appears in the path of a relayed copy we hear
+                      # (e.g. the hilltop repeater that carries traffic out of
+                      # the area), not just any repeater. Matched by prefix,
+                      # so a 3-byte hash also matches the same repeater's
+                      # 2-byte hash. Find hashes in the "delivered: ... via
+                      # [...]" log line. Override per-bridge.
+  min_repeaters: 1    # how many distinct (non-ignored) repeaters must be
+                      # heard relaying a message for it to count as
+                      # delivered. 1-16. Override per-bridge.
+  max_retries: 1      # how many times retry_on_no_repeat may retransmit a
+                      # message while delivery is still unconfirmed. 1-5.
 
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
@@ -244,6 +258,10 @@ bridges:
                                   # top-level meshcore.rx_scopes above
       # ignore_repeat_from: ["a1b2c3"]  # optional per-bridge override of the
                                   # top-level meshcore.ignore_repeat_from above
+      # success_repeaters: ["d4e5f6"]  # optional per-bridge override of the
+                                  # top-level meshcore.success_repeaters above
+      # min_repeaters: 2           # optional per-bridge override of the
+                                  # top-level meshcore.min_repeaters above
     meshtastic:
       enabled: true
       channel_name: "LongFast"

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -303,17 +304,15 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeard(t *testing.T) {
 
 	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
+	var raw []byte
 	select {
-	case <-sentPackets:
+	case raw = <-sentPackets:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the original send")
 	}
 
-	// Simulate the mesh repeating our own message back to us, exactly as
-	// deliverMeshcoreChannelText would on hearing it.
-	if b.consumeSelfEcho(meshcoreEchoKey(m.channelHash, "Alice: hello"), nil) == notSelfEcho {
-		t.Fatal("expected the echo key to be pending after transmitMeshcore")
-	}
+	// The mesh repeats our own packet back to us via a repeater.
+	b.handleMeshcorePacket(relayedCopy(t, raw, "112233"))
 
 	select {
 	case raw := <-sentPackets:
@@ -361,16 +360,16 @@ func TestBridge_TransmitMeshcore_RetriesWhenOnlyRepeatHeardIsFromIgnoredRepeater
 
 	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
+	var raw []byte
 	select {
-	case <-sentPackets:
+	case raw = <-sentPackets:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the original send")
 	}
 
-	// Simulate the mesh repeating our own message back to us, but only via
-	// the ignored repeater — should not count as "heard" for retry purposes.
-	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hello", ignoredHash, 3)
-	b.handleMeshcorePacket(lrx)
+	// The mesh repeats our own packet back to us, but only via the ignored
+	// repeater — should not count as "heard" for retry purposes.
+	b.handleMeshcorePacket(relayedCopy(t, raw, hex.EncodeToString(ignoredHash)))
 
 	select {
 	case <-sentPackets:
@@ -396,14 +395,14 @@ func TestBridge_TransmitMeshcore_NoRetryWhenRepeatHeardFromNonIgnoredRepeater(t 
 
 	b.transmitMeshcore(m, "Alice: hello", uint32(time.Now().Unix()), 1, 1, 0)
 
+	var raw []byte
 	select {
-	case <-sentPackets:
+	case raw = <-sentPackets:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the original send")
 	}
 
-	lrx := buildLogRxDataWithPath(t, m.secret, 1000, "Alice: hello", otherHash, 3)
-	b.handleMeshcorePacket(lrx)
+	b.handleMeshcorePacket(relayedCopy(t, raw, hex.EncodeToString(otherHash)))
 
 	select {
 	case raw := <-sentPackets:

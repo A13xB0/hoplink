@@ -158,7 +158,7 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 	})
 	if err != nil {
 		b.unmarkOutboundSent(echoKey)
-		logfMeshcore("TX bridge %q: send failed (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, err)
+		logfMeshcore("TX bridge %q: send failed (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, b.mcMaxRetries()+1, err)
 		if attempt == 0 {
 			b.forgetDelivery(pktHash) // never went out: nothing to report
 		} else {
@@ -167,17 +167,21 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 		return
 	}
 	b.noteOwnTx(len(chunk))
-	logfMeshcore("TX bridge %q: sent %d bytes to channel_hash %#x (chunk %d/%d, attempt %d/%d, packet %s): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, maxRepeatRetries+1, pktHash)
-	// After the wait: retransmit if retry_on_no_repeat wants to, otherwise
-	// the send has settled — log its delivery summary. Jittered ±20% so two
-	// nodes that collided once don't re-collide every retry round.
-	canRetry := b.meshcoreRetryOnNoRepeat && attempt < maxRepeatRetries
+	logfMeshcore("TX bridge %q: sent %d bytes to channel_hash %#x (chunk %d/%d, attempt %d/%d, packet %s): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, b.mcMaxRetries()+1, pktHash)
+	// After the wait: retransmit if retry_on_no_repeat is on and the
+	// delivery rule isn't satisfied yet, otherwise the send has settled —
+	// log its delivery summary. Jittered ±20% so two nodes that collided
+	// once don't re-collide every retry round.
+	canRetry := b.meshcoreRetryOnNoRepeat && attempt < b.mcMaxRetries()
 	wait := time.Duration(float64(b.meshcoreRetryWait) * (0.8 + 0.4*rand.Float64()))
 	b.afterFunc(wait, func() {
-		if canRetry && b.echoUnheard(echoKey) {
-			logfMeshcore("TX bridge %q: no repeat heard within %s, retransmitting", m.cfg.Name, b.meshcoreRetryWait)
-			b.transmitMeshcore(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1)
-			return
+		if canRetry {
+			b.echoUnheard(echoKey) // release this attempt's pending-echo slot either way
+			if !b.deliveryConfirmed(pktHash) {
+				logfMeshcore("TX bridge %q: delivery not confirmed within %s (needs %s), retransmitting", m.cfg.Name, b.meshcoreRetryWait, b.deliveryRule(pktHash))
+				b.transmitMeshcore(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1)
+				return
+			}
 		}
 		b.reportDelivery(pktHash)
 	})
