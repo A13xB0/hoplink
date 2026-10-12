@@ -141,6 +141,10 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # delivered. 1-16. Override per-bridge.
   max_retries: 1      # how many times retry_on_no_repeat may retransmit a
                       # message while delivery is still unconfirmed. 1-5.
+  success_observers: []  # optional list of CoreScope observer names/IDs — a
+                      # message also counts as delivered once any of them
+                      # reports hearing it. Needs corescope.url below.
+                      # Override per-bridge.
 
 meshtastic:               # required only if some bridge has meshtastic.enabled: true; omit entirely if you have no Meshtastic device
   host: 192.168.4.2   # your Meshtastic device's IP (with its TCP client API enabled)
@@ -203,6 +207,13 @@ limits:
                             # and the sender is told why, in Discord only.
                             # Roughly two mesh messages' worth by default.
                             # Override per-bridge with max_message_bytes below.
+
+# corescope:            # optional: a CoreScope server's live packet feed
+#   url: "wss://corescope.example/ws"   # its /ws endpoint. Observers there
+#                       # hearing our MeshCore sends count as delivery
+#                       # evidence (see meshcore.success_observers). Raise
+#                       # meshcore.retry_wait_ms (~15000) so retries wait
+#                       # for its few-seconds-late observations.
 
 coexistence:
   avoid_simultaneous_tx: true   # if you run both a MeshCore radio and a Meshtastic

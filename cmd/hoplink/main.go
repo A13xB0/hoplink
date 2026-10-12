@@ -19,6 +19,7 @@ import (
 
 	"github.com/hectospark/hoplink/internal/bridge"
 	"github.com/hectospark/hoplink/internal/config"
+	"github.com/hectospark/hoplink/internal/corescope"
 	"github.com/hectospark/hoplink/internal/discord"
 	"github.com/hectospark/hoplink/internal/meshcore"
 	"github.com/hectospark/hoplink/internal/meshtastic"
@@ -103,6 +104,13 @@ func main() {
 		go func() {
 			defer wg.Done()
 			runMeshcoreWithReconnect(ctx, cfg, br)
+		}()
+	}
+	if url := cfg.CoreScope.URL; url != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			corescope.Run(ctx, url, br.HandleCoreScopeObservation)
 		}()
 	}
 	if cfg.Meshtastic.Configured() {

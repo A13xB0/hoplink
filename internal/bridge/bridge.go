@@ -75,6 +75,7 @@ type mapping struct {
 	// Valid iff meshcoreEnabled.
 	successRepeaters []string
 	minRepeaters     int
+	successObservers []string // lowercase CoreScope observer names/IDs (meshcore.success_observers)
 
 	meshtasticEnabled bool // channel resolution happens live against whichever meshtastic.Session is attached (see outbound.go/inbound.go)
 }
@@ -272,6 +273,9 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 				m.successRepeaters = append(m.successRepeaters, strings.ToLower(h))
 			}
 			m.minRepeaters = bc.ResolvedMinRepeaters(cfg.Meshcore.MinRepeaters)
+			for _, o := range bc.ResolvedSuccessObservers(cfg.Meshcore.SuccessObservers) {
+				m.successObservers = append(m.successObservers, strings.ToLower(o))
+			}
 		}
 		b.byName = append(b.byName, m)
 		if discordEnabled {

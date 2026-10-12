@@ -393,6 +393,7 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `success_repeaters` | `[]` | Optional list of repeater hop hashes (hex). When set, a message only counts as **delivered** once one of these appears in the path of a relayed copy hoplink hears — e.g. the repeater that carries traffic out of your area — rather than any repeater at all. Matched by prefix, so a 3-byte hash also matches the same repeater's 2-byte hash. Override per-bridge with `meshcore.success_repeaters` |
 | `min_repeaters` | `1` | How many distinct (non-ignored) repeaters must be heard relaying a message for it to count as delivered. `1`–`16`. Override per-bridge with `meshcore.min_repeaters` |
 | `max_retries` | `1` | How many times `retry_on_no_repeat` may retransmit one message while its delivery is unconfirmed. `1`–`5` |
+| `success_observers` | `[]` | Optional list of [CoreScope](#corescope-top-level) observer names or IDs (case-insensitive). A message also counts as delivered once any of them reports hearing it — an alternative to the repeater rule, not an extra requirement. Needs `corescope.url`. Override per-bridge with `meshcore.success_observers` |
 
 ### `meshtastic:` (top-level)
 
@@ -423,6 +424,29 @@ bridge sets `discord_channel_id`.
 | Field               | Default | Meaning                                                                                                    |
 |---------------------|---------|--------------------------------------------------------------------------------------------------------------|
 | `max_message_bytes` | `320`   | A Discord→mesh message composed as `"<Name>: <content>"` longer than this (UTF-8 bytes, pre-chunking) is rejected outright — not chunked — and the sender gets a reply explaining why, in Discord only |
+
+### `corescope:` (top-level)
+
+Optional. Connects hoplink to a [CoreScope](https://github.com/Kpa-clawbot/CoreScope)
+server's live packet feed. CoreScope collects MeshCore packets from "observer"
+nodes spread across a region; whenever one of them hears one of hoplink's own
+transmissions, that observation counts as evidence for the
+[delivery summary](#meshcore-delivery-summary): every repeater in the
+observed path counts as having relayed it, and the observer can satisfy
+`meshcore.success_observers`. That's evidence hoplink's own radio can never
+gather — copies relayed beyond its range, or a repeater's rebroadcast that
+collided at its own antenna (which a retry can't fix, since repeaters drop a
+byte-identical retransmit they've already seen).
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `url` | `""` | CoreScope's WebSocket endpoint, e.g. `wss://corescope.example/ws`. Empty disables it. hoplink reconnects with backoff if the feed drops; MeshCore relaying never depends on it |
+
+CoreScope observations arrive a few seconds late (observer → MQTT → CoreScope's
+poll interval), so with it on, raise `meshcore.retry_wait_ms` (e.g. `15000`) so
+the retry decision waits for them. An observation arriving after the summary
+that newly confirms delivery is logged as `delivered after all: confirmed late
+by CoreScope observer "…"`.
 
 ### `coexistence:`
 
