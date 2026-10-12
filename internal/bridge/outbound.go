@@ -113,15 +113,13 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 // transmitMeshcore sends chunk once, stamped with tsUnix (the caller
 // generates it for the original send; a retry reuses it so the retransmit is
 // byte-identical over RF — mesh-side dedup and sibling bridge instances then
-// treat it as the same message, not a new one). If meshcore.
-// retry_on_no_repeat is enabled and this isn't already a retry, it schedules
-// a check meshcoreRetryWait later: if no self-echo of chunk was heard by
-// then (see echoUnheard) — which also covers an echo heard only via a
-// repeater on meshcore.ignore_repeat_from, since consumeSelfEcho
-// deliberately leaves that case pending — nothing repeated the message
-// across the mesh, so it's retransmitted once more. attempt is 0 for the
-// original send, 1 for the single allowed retry — purely to stop it
-// recursing past maxRepeatRetries.
+// treat it as the same message, not a new one). The send is tracked by its
+// packet hash (see delivery.go). meshcoreRetryWait later (jittered), if
+// meshcore.retry_on_no_repeat is on, attempt < meshcore.max_retries, and the
+// relayed copies heard so far don't satisfy the delivery rule
+// (min_repeaters / success_repeaters, ignoring ignore_repeat_from), it's
+// retransmitted; otherwise the send has settled and its delivery summary is
+// logged. attempt is 0 for the original send and counts up per retry.
 //
 // (There is no protocol-level delivery signal to use instead: GRP_TXT flood
 // packets carry no ack — PUSH_CODE_SEND_CONFIRMED only fires for direct
