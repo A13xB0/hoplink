@@ -126,6 +126,11 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		return
 	}
 
+	if b.isRepeatedContent(meshcoreContentKey(channelHash, text)) {
+		logfMeshcore("RX merging %q on channel_hash %#x: identical to a message relayed within the last %s (dedup_window_s)", text, channelHash, b.contentDedupWindow)
+		return
+	}
+
 	sender, body := splitSenderText(text)
 	b.debugMeshcore("RX via %s on channel_hash %#x from %q: %q", source, channelHash, sender, body)
 
@@ -229,6 +234,11 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		return
 	}
 
+	if b.isRepeatedContent(meshtasticContentKey(msg.ChannelIndex, msg.From, msg.Text)) {
+		logfMeshtastic("RX merging %q from %s on channel index %d: identical to a message relayed within the last %s (dedup_window_s)", msg.Text, msg.FromName, msg.ChannelIndex, b.contentDedupWindow)
+		return
+	}
+
 	b.debugMeshtastic("RX on channel index %d from %s: %q", msg.ChannelIndex, msg.FromName, msg.Text)
 
 	relayedHash := map[byte]bool{}
@@ -277,6 +287,19 @@ func meshcoreDedupKey(channelHash byte, timestampUnix uint32, text string) strin
 
 func meshcoreEchoKey(channelHash byte, text string) string {
 	return fmt.Sprintf("mc|%d|%s", channelHash, text)
+}
+
+// Content keys (dedup_window_s) deliberately omit the per-packet identity
+// (timestamp / packet ID): they exist to catch a re-send of the same text,
+// which is a new packet. MeshCore's text already carries the "Sender: "
+// prefix; Meshtastic's sender is the protocol-native node number.
+
+func meshcoreContentKey(channelHash byte, text string) string {
+	return fmt.Sprintf("mcc|%d|%s", channelHash, text)
+}
+
+func meshtasticContentKey(channelIndex, from uint32, text string) string {
+	return fmt.Sprintf("mtc|%d|%d|%s", channelIndex, from, text)
 }
 
 func meshtasticDedupKey(channelIndex, packetID uint32, text string) string {
@@ -334,6 +357,29 @@ func (b *Bridge) isDuplicateInbound(key string) bool {
 		return true
 	}
 	b.recentInbound[key] = time.Now()
+	return false
+}
+
+// isRepeatedContent reports whether contentKey (see meshcoreContentKey /
+// meshtasticContentKey) was first relayed less than dedup_window_s ago,
+// recording it if not. The window runs from the first relay and is not
+// extended by merged repeats, so someone legitimately repeating themselves
+// periodically still gets through once per window. Always false when
+// dedup_window_s is 0.
+func (b *Bridge) isRepeatedContent(contentKey string) bool {
+	if b.contentDedupWindow <= 0 {
+		return false
+	}
+	now := time.Now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if first, ok := b.recentContent[contentKey]; ok && now.Sub(first) < b.contentDedupWindow {
+		return true
+	}
+	if b.recentContent == nil {
+		b.recentContent = make(map[string]time.Time)
+	}
+	b.recentContent[contentKey] = now
 	return false
 }
 

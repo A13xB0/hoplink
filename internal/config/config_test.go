@@ -1792,3 +1792,32 @@ func TestLoad_RejectsOutOfRangeBusyKnobs(t *testing.T) {
 		t.Fatalf("expected a meshcore.min_tx_spacing_ms error, got %v", err)
 	}
 }
+
+func TestLoad_DedupWindowDefaultsToDisabled(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DedupWindow() != 0 {
+		t.Errorf("DedupWindow() = %s, want 0 (disabled) by default", cfg.DedupWindow())
+	}
+}
+
+func TestLoad_DedupWindowIsConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal+"dedup_window_s: 120\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DedupWindow() != 120*time.Second {
+		t.Errorf("DedupWindow() = %s, want 2m0s", cfg.DedupWindow())
+	}
+}
+
+func TestLoad_DedupWindowOutOfRangeRejected(t *testing.T) {
+	for _, v := range []string{"-1", "3601"} {
+		_, err := Load(writeTemp(t, validMinimal+"dedup_window_s: "+v+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "dedup_window_s") {
+			t.Errorf("dedup_window_s: %s: want a dedup_window_s validation error, got %v", v, err)
+		}
+	}
+}

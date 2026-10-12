@@ -89,6 +89,7 @@ type Bridge struct {
 	hashSize                  int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
 	meshtasticHopLimit        uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
 	debug                     bool
+	contentDedupWindow        time.Duration // dedup_window_s — merge identical sender+text re-sends; 0 = off (see isRepeatedContent)
 	meshcoreRetryOnNoRepeat   bool          // meshcore.retry_on_no_repeat — see maxRepeatRetries
 	meshtasticRetryOnNoRepeat bool          // meshtastic.retry_on_no_repeat — mirrors meshcoreRetryOnNoRepeat
 	meshcoreChunkDelay        time.Duration // meshcore.chunk_delay_ms — extra pause between chunks of a split message
@@ -126,6 +127,10 @@ type Bridge struct {
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
 	recentOutbound map[string]pendingEcho
+	// recentContent maps a channel+sender+text key to when it was first
+	// relayed, for dedup_window_s (see isRepeatedContent). Lazily created;
+	// guarded by mu.
+	recentContent map[string]time.Time
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
@@ -199,6 +204,7 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		hashSize:                  cfg.Meshcore.PathHashBytes,
 		meshtasticHopLimit:        uint32(cfg.Meshtastic.ResolvedHopLimit()),
 		debug:                     cfg.Debug,
+		contentDedupWindow:        cfg.DedupWindow(),
 		meshcoreRetryOnNoRepeat:   cfg.Meshcore.RetryOnNoRepeat,
 		meshtasticRetryOnNoRepeat: cfg.Meshtastic.RetryOnNoRepeat,
 		meshcoreChunkDelay:        cfg.Meshcore.ChunkDelay(),
@@ -565,6 +571,11 @@ func (b *Bridge) sweep() {
 	for k, pending := range b.recentOutbound {
 		if now.Sub(pending.sentAt) > ttl {
 			delete(b.recentOutbound, k)
+		}
+	}
+	for k, first := range b.recentContent {
+		if now.Sub(first) >= b.contentDedupWindow {
+			delete(b.recentContent, k)
 		}
 	}
 }
