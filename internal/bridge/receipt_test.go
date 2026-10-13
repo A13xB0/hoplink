@@ -142,3 +142,34 @@ func TestReceipt_MeshOriginSendsHaveNoReceipt(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	fr.waitFor(t) // nothing
 }
+
+// The same text sent twice within one second is byte-identical — one packet
+// hash, one delivery record — but two Discord messages: both must settle.
+func TestReceipt_IdenticalMessagesInSameSecondBothSettle(t *testing.T) {
+	b, _, sent, _ := newDeliveryTestBridge(t)
+	fr := &fakeReactor{}
+	b.react = fr
+
+	b.handleDiscordMessage(discordMsg("m1", "ok"))
+	raw := <-sent
+	b.handleDiscordMessage(discordMsg("m2", "ok"))
+	raw2 := <-sent
+	if string(raw) != string(raw2) {
+		t.Skip("sends straddled a second boundary; not the same packet")
+	}
+	b.handleMeshcorePacket(relayedCopy(t, raw, "a1a1a1"))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		fr.mu.Lock()
+		got := strings.Join(fr.events, " | ")
+		fr.mu.Unlock()
+		if strings.Contains(got, "m1 +"+reactDelivered) && strings.Contains(got, "m2 +"+reactDelivered) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("both messages should end ✅, reactions = [%s]", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
