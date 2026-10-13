@@ -1,10 +1,12 @@
 package bridge
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/hectospark/hoplink/internal/corescope"
 	"github.com/hectospark/hoplink/internal/meshcore"
 )
 
@@ -32,17 +34,23 @@ type delivery struct {
 	chunkTotal int
 	firstSent  time.Time
 	attempts   int
-	copies     int      // relayed copies heard on the raw log
-	repeaters  []string // distinct hop hashes (hex) seen in any copy's path, first-heard order
-	ignore     [][]byte // the sending mapping's meshcore.ignore_repeat_from
-	success    []string // the sending mapping's meshcore.success_repeaters (lowercase hex)
-	minRepeat  int      // the sending mapping's meshcore.min_repeaters
+	copies     int        // relayed copies heard on the raw log
+	repeaters  []string   // distinct hop hashes (hex) seen in any copy's path, first-heard order
+	ignore     [][]byte   // the sending mapping's meshcore.ignore_repeat_from
+	success    []string   // the sending mapping's meshcore.success_repeaters (lowercase hex)
+	minRepeat  int        // the sending mapping's meshcore.min_repeaters
+	successObs []string   // the sending mapping's meshcore.success_observers (lowercase)
+	observers  []observer // CoreScope observers that reported hearing it, first-reported order
 	// receipts are the originating Discord messages' delivery reactions —
 	// usually zero or one, but two identical sends in the same second (same
 	// text, same timestamp) are the same packet and share this record, so
 	// each of their receipts must be settled. Cleared once settled.
 	receipts []*discordReceipt
-	reported bool // summary already logged; later copies only count
+	// lateReceipts are receipts this record settled as unconfirmed; a late
+	// CoreScope observation that confirms delivery after all upgrades them
+	// (see HandleCoreScopeObservation).
+	lateReceipts []*discordReceipt
+	reported     bool // summary already logged; later copies only count
 }
 
 // trackDelivery records an attempt to send the packet hashed h — creating
@@ -63,6 +71,7 @@ func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chun
 			ignore:     m.ignoreRepeatFrom,
 			success:    m.successRepeaters,
 			minRepeat:  m.minRepeaters,
+			successObs: m.successObservers,
 		}
 		b.deliveries[h] = d
 	}
@@ -155,6 +164,9 @@ func (d *delivery) proven() (proven, ignored []string) {
 
 // confirmed applies d's delivery rule. Caller holds b.mu.
 func (d *delivery) confirmed() bool {
+	if d.observerConfirmed() {
+		return true
+	}
 	proven, _ := d.proven()
 	if len(proven) < d.minRepeaters() {
 		return false
@@ -197,6 +209,9 @@ func (d *delivery) rule() string {
 	if len(d.success) > 0 {
 		need += fmt.Sprintf(" including one of [%s]", strings.Join(d.success, ", "))
 	}
+	if len(d.successObs) > 0 {
+		need += fmt.Sprintf(", or a report from CoreScope observer [%s]", strings.Join(d.successObs, ", "))
+	}
 	return need
 }
 
@@ -214,6 +229,9 @@ func (b *Bridge) reportDelivery(h meshcore.PacketHash) {
 	line := d.summary(h)
 	receipts, confirmed := d.receipts, d.confirmed()
 	d.receipts = nil
+	if !confirmed {
+		d.lateReceipts = append(d.lateReceipts, receipts...)
+	}
 	b.mu.Unlock()
 	logfMeshcore("%s", line)
 	for _, rc := range receipts {
@@ -228,9 +246,19 @@ func (d *delivery) summary(h meshcore.PacketHash) string {
 	attempts := fmt.Sprintf("%d %s", d.attempts, plural(d.attempts, "attempt", "attempts"))
 	heard := fmt.Sprintf("%d %s heard via %d %s [%s]",
 		d.copies, plural(d.copies, "copy", "copies"), len(proven), plural(len(proven), "repeater", "repeaters"), strings.Join(proven, ", "))
+	if d.copies == 0 && len(proven) == 0 {
+		heard = "no relayed copy heard locally"
+	}
 	also := ""
 	if len(ignored) > 0 {
 		also = fmt.Sprintf(" (also via ignored: %s)", strings.Join(ignored, ", "))
+	}
+	if len(d.observers) > 0 {
+		labels := make([]string, len(d.observers))
+		for i, o := range d.observers {
+			labels[i] = o.label()
+		}
+		also += fmt.Sprintf("; seen by %d CoreScope %s [%s]", len(labels), plural(len(labels), "observer", "observers"), strings.Join(labels, ", "))
 	}
 	switch {
 	case d.confirmed():
@@ -238,11 +266,91 @@ func (d *delivery) summary(h meshcore.PacketHash) string {
 	case len(proven) > 0:
 		return fmt.Sprintf("%s NOT confirmed: %s, but the rule needs %s, after %s%s", head, heard, d.rule(), attempts, also)
 	case len(ignored) > 0:
-		return fmt.Sprintf("%s NOT confirmed: heard only via ignored repeaters [%s] after %s", head, strings.Join(ignored, ", "), attempts)
+		return fmt.Sprintf("%s NOT confirmed: heard only via ignored repeaters [%s] after %s%s", head, strings.Join(ignored, ", "), attempts, also)
 	case d.copies > 0:
-		return fmt.Sprintf("%s NOT confirmed: %d %s heard with no path info after %s", head, d.copies, plural(d.copies, "copy", "copies"), attempts)
+		return fmt.Sprintf("%s NOT confirmed: %d %s heard with no path info after %s%s", head, d.copies, plural(d.copies, "copy", "copies"), attempts, also)
 	default:
-		return fmt.Sprintf("%s NOT confirmed: no relayed copy heard after %s", head, attempts)
+		return fmt.Sprintf("%s NOT confirmed: no relayed copy heard after %s%s", head, attempts, also)
+	}
+}
+
+// observer is a CoreScope observer that reported hearing a delivery.
+type observer struct{ id, name string }
+
+func (o observer) label() string {
+	if o.name != "" {
+		return o.name
+	}
+	return o.id
+}
+
+// observerConfirmed reports whether any success_observers entry (matched
+// case-insensitively against observer name or ID) has reported hearing d.
+func (d *delivery) observerConfirmed() bool {
+	for _, o := range d.observers {
+		for _, want := range d.successObs {
+			if strings.EqualFold(o.name, want) || strings.EqualFold(o.id, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// HandleCoreScopeObservation records a CoreScope observer's reception of a
+// packet (see internal/corescope) against our own delivery record for it,
+// if it's one of ours: every hop in the observed path proves that repeater
+// relayed it, and the observer itself is recorded for success_observers.
+// This is the evidence our own radio can't gather — copies relayed far
+// beyond its range, or ones whose rebroadcast collided at our antenna. An
+// observation arriving after the summary was logged that newly satisfies
+// the delivery rule is logged as a late confirmation. Safe to call from
+// any goroutine.
+func (b *Bridge) HandleCoreScopeObservation(obs corescope.Observation) {
+	raw, err := hex.DecodeString(obs.Hash)
+	if err != nil || len(raw) != len(meshcore.PacketHash{}) {
+		return
+	}
+	var h meshcore.PacketHash
+	copy(h[:], raw)
+
+	b.mu.Lock()
+	d, ok := b.deliveries[h]
+	if !ok {
+		b.mu.Unlock()
+		return
+	}
+	wasConfirmed := d.confirmed()
+	for _, hop := range obs.Hops {
+		if !containsString(d.repeaters, hop) {
+			d.repeaters = append(d.repeaters, hop)
+		}
+	}
+	o := observer{id: obs.ObserverID, name: obs.ObserverName}
+	known := false
+	for _, have := range d.observers {
+		if have == o {
+			known = true
+			break
+		}
+	}
+	if !known {
+		d.observers = append(d.observers, o)
+	}
+	late := d.reported && !wasConfirmed && d.confirmed()
+	var upgrade []*discordReceipt
+	if late {
+		upgrade, d.lateReceipts = d.lateReceipts, nil
+	}
+	name, idx, total := d.bridge, d.chunkIdx, d.chunkTotal
+	b.mu.Unlock()
+
+	b.debugMeshcore("RX CoreScope observer %q heard our packet %s for bridge %q, path [%s]", o.label(), h, name, strings.Join(obs.Hops, " -> "))
+	if late {
+		logfMeshcore("TX bridge %q: chunk %d/%d (packet %s) delivered after all: confirmed late by CoreScope observer %q", name, idx, total, h, o.label())
+		for _, rc := range upgrade {
+			rc.lateConfirm()
+		}
 	}
 }
 

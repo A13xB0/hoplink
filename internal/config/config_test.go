@@ -1851,6 +1851,33 @@ func TestLoad_DeliveryRulePerBridgeOverride(t *testing.T) {
 	}
 }
 
+func TestLoad_CoreScopeURLValidation(t *testing.T) {
+	ok := validMinimal + "corescope:\n  url: wss://corescope.example/ws\n"
+	if _, err := Load(writeTemp(t, ok)); err != nil {
+		t.Errorf("wss URL should be accepted: %v", err)
+	}
+	for _, bad := range []string{"https://corescope.example/ws", "corescope.example", "wss://"} {
+		_, err := Load(writeTemp(t, validMinimal+"corescope:\n  url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "corescope.url") {
+			t.Errorf("%q: want a corescope.url error, got %v", bad, err)
+		}
+	}
+}
+
+func TestLoad_SuccessObserversNeedCoreScope(t *testing.T) {
+	_, err := Load(writeTemp(t, configWithMeshcore(`  success_observers: ["far-side"]`)))
+	if err == nil || !strings.Contains(err.Error(), "corescope.url") {
+		t.Fatalf("want an error pointing at corescope.url, got %v", err)
+	}
+	cfg, err := Load(writeTemp(t, configWithMeshcore(`  success_observers: ["far-side"]`)+"corescope:\n  url: ws://localhost:3000/ws\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Bridges[0].ResolvedSuccessObservers(cfg.Meshcore.SuccessObservers); len(got) != 1 || got[0] != "far-side" {
+		t.Errorf("ResolvedSuccessObservers = %v", got)
+	}
+}
+
 func TestLoad_DeliveryReactionsDefaultOffAndConfigurable(t *testing.T) {
 	cfg, err := Load(writeTemp(t, validMinimal))
 	if err != nil {

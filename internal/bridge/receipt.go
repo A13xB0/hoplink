@@ -6,7 +6,9 @@ import "sync"
 // from (discord.delivery_reactions). One discordReceipt spans every chunk
 // of that message: 📡 when the radio first accepts a chunk, then — once
 // every chunk has settled (see reportDelivery) — ✅ if all were confirmed
-// delivered, otherwise ⚠️, and the 📡 is removed.
+// delivered, otherwise ⚠️, and the 📡 is removed. A ⚠️ is upgraded to ✅ if
+// late CoreScope evidence later confirms every chunk that was unconfirmed
+// (see lateConfirm).
 
 const (
 	reactAccepted    = "📡"
@@ -25,10 +27,10 @@ type discordReceipt struct {
 	react                reactor
 	channelID, messageID string
 
-	mu           sync.Mutex
-	pending      int // chunks not yet settled
-	allConfirmed bool
-	accepted     bool // 📡 added
+	mu       sync.Mutex
+	pending  int  // chunks not yet settled
+	failed   int  // chunks settled unconfirmed (and not since confirmed late)
+	accepted bool // 📡 added
 }
 
 // newDiscordReceipt returns a receipt for a message split into chunks
@@ -38,7 +40,7 @@ func (b *Bridge) newDiscordReceipt(channelID, messageID string, chunks int) *dis
 	if b.react == nil || messageID == "" {
 		return nil
 	}
-	return &discordReceipt{react: b.react, channelID: channelID, messageID: messageID, pending: chunks, allConfirmed: true}
+	return &discordReceipt{react: b.react, channelID: channelID, messageID: messageID, pending: chunks}
 }
 
 // markAccepted adds 📡 the first time any chunk is accepted by the radio.
@@ -67,8 +69,10 @@ func (r *discordReceipt) settle(confirmed bool) {
 		return
 	}
 	r.pending--
-	r.allConfirmed = r.allConfirmed && confirmed
-	done, ok, hadAccepted := r.pending == 0, r.allConfirmed, r.accepted
+	if !confirmed {
+		r.failed++
+	}
+	done, ok, hadAccepted := r.pending == 0, r.failed == 0, r.accepted
 	r.mu.Unlock()
 	if !done {
 		return
@@ -80,6 +84,27 @@ func (r *discordReceipt) settle(confirmed bool) {
 	r.do(r.react.React, final)
 	if hadAccepted {
 		r.do(r.react.Unreact, reactAccepted)
+	}
+}
+
+// lateConfirm records that one chunk previously settled as unconfirmed has
+// since been confirmed (late CoreScope evidence). Once every chunk has
+// settled and none remain unconfirmed, the ⚠️ is swapped for ✅.
+func (r *discordReceipt) lateConfirm() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.failed <= 0 {
+		r.mu.Unlock()
+		return
+	}
+	r.failed--
+	upgrade := r.failed == 0 && r.pending == 0
+	r.mu.Unlock()
+	if upgrade {
+		r.do(r.react.React, reactDelivered)
+		r.do(r.react.Unreact, reactUnconfirmed)
 	}
 }
 
