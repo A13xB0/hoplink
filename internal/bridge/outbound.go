@@ -152,9 +152,15 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 // exactly once: directly if its first attempt never makes it out, otherwise
 // via reportDelivery when the send settles.
 func (b *Bridge) transmitMeshcoreFor(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int, rc *discordReceipt) {
+	b.transmitMeshcoreScoped(m, m.scopeKey, chunk, tsUnix, chunkIdx, chunkTotal, attempt, rc)
+}
+
+// transmitMeshcoreScoped is transmitMeshcoreFor flooding in scopeKey rather
+// than m's own flood_scope (a scope notice's reply_scope).
+func (b *Bridge) transmitMeshcoreScoped(m *mapping, scopeKey []byte, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int, rc *discordReceipt) {
 	b.meshcoreTxMu.Lock() // see Bridge.meshcoreTxMu
 	defer b.meshcoreTxMu.Unlock()
-	pkt, err := meshcore.BuildChannelPacket(m.secret, b.hashSize, m.scopeKey, chunk, tsUnix)
+	pkt, err := meshcore.BuildChannelPacket(m.secret, b.hashSize, scopeKey, chunk, tsUnix)
 	if err != nil {
 		logfMeshcore("TX bridge %q: building packet failed (chunk %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, err)
 		rc.settle(false)
@@ -213,7 +219,7 @@ func (b *Bridge) transmitMeshcoreFor(m *mapping, chunk string, tsUnix uint32, ch
 			b.echoUnheard(echoKey) // release this attempt's pending-echo slot either way
 			if !b.deliveryConfirmed(pktHash) {
 				logfMeshcore("TX bridge %q: delivery not confirmed within %s (needs %s), retransmitting", m.cfg.Name, b.meshcoreRetryWait, b.deliveryRule(pktHash))
-				b.transmitMeshcoreFor(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1, rc)
+				b.transmitMeshcoreScoped(m, scopeKey, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1, rc)
 				return
 			}
 		}

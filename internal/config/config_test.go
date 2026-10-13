@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -1920,6 +1921,97 @@ func TestLoad_DedupWindowOutOfRangeRejected(t *testing.T) {
 		_, err := Load(writeTemp(t, validMinimal+"dedup_window_s: "+v+"\n"))
 		if err == nil || !strings.Contains(err.Error(), "dedup_window_s") {
 			t.Errorf("dedup_window_s: %s: want a dedup_window_s validation error, got %v", v, err)
+		}
+	}
+}
+
+const scopeNoticeBridge = `      flood_scope: sco-admin
+      rx_scopes: [fif, sco-admin]
+      scope_notice:
+        scopes: [sco]
+        message: "Not relayed to Meshtastic: switch your region to sco-admin to reach LongFast."
+`
+
+func TestLoad_ScopeNoticeIsOptional(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Bridges[0].MeshCore.ScopeNotice != nil || len(cfg.Bridges[0].MeshCore.RxScopes) != 0 {
+		t.Errorf("scope_notice and rx_scopes should default to off, got %+v", cfg.Bridges[0].MeshCore)
+	}
+}
+
+func TestLoad_ScopeNoticeDefaults(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal+scopeNoticeBridge))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := cfg.Bridges[0]
+	n := b.MeshCore.ScopeNotice
+	if n == nil || n.ResolvedName() != "hoplink" || n.Cooldown() != 10*time.Minute {
+		t.Fatalf("scope_notice defaults = %+v", n)
+	}
+	// reply_scope unset: the bridge's own flood_scope.
+	if got, want := b.ReplyScopeKey(cfg.Meshcore.FloodScope), meshcore.FloodScopeKey("sco-admin"); !bytes.Equal(got, want) {
+		t.Errorf("ReplyScopeKey = %x, want sco-admin's %x", got, want)
+	}
+	b.MeshCore.ScopeNotice.ReplyScope = "sco"
+	if got, want := b.ReplyScopeKey(cfg.Meshcore.FloodScope), meshcore.FloodScopeKey("sco"); !bytes.Equal(got, want) {
+		t.Errorf("ReplyScopeKey with reply_scope = %x, want sco's %x", got, want)
+	}
+}
+
+func TestLoad_ScopeNoticeUsesGlobalRxScopes(t *testing.T) {
+	doc := configWithMeshcore("  rx_scopes: [fif, sco-admin]") + `      scope_notice:
+        scopes: [sco]
+        message: "Not relayed."
+`
+	if _, err := Load(writeTemp(t, doc)); err != nil {
+		t.Errorf("a global rx_scopes should satisfy scope_notice: %v", err)
+	}
+}
+
+func TestLoad_ScopeNoticeValidation(t *testing.T) {
+	for name, c := range map[string]struct{ bridge, want string }{
+		"needs rx_scopes": {`      scope_notice:
+        scopes: [sco]
+        message: "x"
+`, "needs rx_scopes"},
+		"needs scopes": {`      rx_scopes: [sco-admin]
+      scope_notice:
+        message: "x"
+`, "scopes must list"},
+		"overlaps rx_scopes": {`      rx_scopes: [sco-admin]
+      scope_notice:
+        scopes: ["#SCO-admin"]
+        message: "x"
+`, "also in rx_scopes"},
+		"needs message": {`      rx_scopes: [sco-admin]
+      scope_notice:
+        scopes: [sco]
+`, "message is required"},
+		"message too long": {`      rx_scopes: [sco-admin]
+      scope_notice:
+        scopes: [sco]
+        message: "` + strings.Repeat("x", 101) + `"
+`, "at most 100 bytes"},
+		"cooldown range": {`      rx_scopes: [sco-admin]
+      scope_notice:
+        scopes: [sco]
+        message: "x"
+        cooldown_s: 30
+`, "cooldown_s"},
+		"read only": {`      read_only: true
+      rx_scopes: [sco-admin]
+      scope_notice:
+        scopes: [sco]
+        message: "x"
+`, "read_only"},
+	} {
+		_, err := Load(writeTemp(t, validMinimal+c.bridge))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error mentioning %q, got %v", name, c.want, err)
 		}
 	}
 }

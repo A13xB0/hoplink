@@ -71,20 +71,27 @@ func (p Packet) Hops() [][]byte {
 // a specific received packet, never precomputed per scope name ahead of
 // time.
 func (p Packet) MatchesAnyScope(scopeNames []string) (bool, error) {
+	_, ok, err := p.MatchScope(scopeNames)
+	return ok, err
+}
+
+// MatchScope is MatchesAnyScope that also returns which of scopeNames p
+// was flooded in (the first whose transport code matches).
+func (p Packet) MatchScope(scopeNames []string) (string, bool, error) {
 	if !p.Route.HasTransportCodes() || len(p.TransportCodes) < 2 {
-		return false, nil
+		return "", false, nil
 	}
 	got := binary.LittleEndian.Uint16(p.TransportCodes[0:2])
 	for _, name := range scopeNames {
 		code, err := CalcTransportCode(FloodScopeKey(name), p.PayloadType, p.Payload)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 		if code == got {
-			return true, nil
+			return name, true, nil
 		}
 	}
-	return false, nil
+	return "", false, nil
 }
 
 // BuildPacket serialises p to its on-wire bytes (mirrors firmware

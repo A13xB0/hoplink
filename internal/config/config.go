@@ -374,6 +374,67 @@ type BridgeMeshCore struct {
 	// SuccessObservers optionally overrides meshcore.success_observers for
 	// this bridge only; empty means use the global value.
 	SuccessObservers []string `yaml:"success_observers"`
+	// ScopeNotice optionally replies on this channel when a message arrives
+	// in a scope that rx_scopes rejects, telling the sender it wasn't
+	// relayed. nil (the default) sends no notices.
+	ScopeNotice *ScopeNotice `yaml:"scope_notice"`
+}
+
+// ScopeNotice configures a bridge's reply to messages that rx_scopes
+// rejects (see BridgeMeshCore.ScopeNotice).
+type ScopeNotice struct {
+	// Scopes lists the rejected scopes that get a notice. A rejected
+	// message in any other scope (or unscoped) is dropped silently: a
+	// scope can only be recognised by name (see meshcore.Packet.MatchScope).
+	Scopes []string `yaml:"scopes"`
+	// Message is the notice text. It's sent as "<Name>: @[<sender>] <Message>".
+	Message string `yaml:"message"`
+	// Name is the sender name the notice is sent under. Default "hoplink".
+	Name string `yaml:"name"`
+	// ReplyScope is the scope the notice is flooded in; "" means this
+	// bridge's own flood_scope.
+	ReplyScope string `yaml:"reply_scope"`
+	// CooldownS is the minimum time between notices to the same sender.
+	// 0 means the default, 600; otherwise 60-86400.
+	CooldownS int `yaml:"cooldown_s"`
+}
+
+// Defaults for ScopeNotice.
+const (
+	DefaultScopeNoticeName      = "hoplink"
+	DefaultScopeNoticeCooldownS = 600
+	maxScopeNoticeBytes         = 100
+)
+
+// ResolvedName returns n's sender name, defaulting to "hoplink".
+func (n ScopeNotice) ResolvedName() string {
+	if strings.TrimSpace(n.Name) == "" {
+		return DefaultScopeNoticeName
+	}
+	return strings.TrimSpace(n.Name)
+}
+
+// Cooldown returns n's per-sender cooldown as a Duration.
+func (n ScopeNotice) Cooldown() time.Duration {
+	if n.CooldownS == 0 {
+		return DefaultScopeNoticeCooldownS * time.Second
+	}
+	return time.Duration(n.CooldownS) * time.Second
+}
+
+// ReplyScopeKey returns the flood-scope key the notice is sent in: its own
+// reply_scope if set, else this bridge's resolved flood_scope.
+func (b Bridge) ReplyScopeKey(globalScope string) []byte {
+	if n := b.MeshCore.ScopeNotice; n != nil && strings.TrimSpace(n.ReplyScope) != "" {
+		return scopeKeyForName(n.ReplyScope)
+	}
+	return b.ResolvedScopeKey(globalScope)
+}
+
+// normScope normalises a scope name for comparison, the way FloodScopeKey
+// does when deriving its key.
+func normScope(name string) string {
+	return strings.TrimPrefix(meshcore.NormalizeChannelName(name), "#")
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -811,6 +872,9 @@ func (c *Config) Validate() error {
 			if b.MeshCore.MinRepeaters < 0 || b.MeshCore.MinRepeaters > 16 {
 				errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.min_repeaters must be between 1 and 16 (or unset), got %d", label, b.MeshCore.MinRepeaters))
 			}
+			if n := b.MeshCore.ScopeNotice; n != nil {
+				errs = append(errs, validScopeNotice(label, *n, b.ResolvedRxScopes(c.Meshcore.RxScopes), b.MeshCore.ReadOnly)...)
+			}
 		}
 
 		if b.Meshtastic.Enabled && strings.TrimSpace(b.Meshtastic.ChannelName) == "" {
@@ -856,4 +920,46 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// validScopeNotice checks bridge label's scope_notice against its resolved
+// rx_scopes.
+func validScopeNotice(label string, n ScopeNotice, rxScopes []string, readOnly bool) []string {
+	var errs []string
+	field := fmt.Sprintf("bridges[%s].meshcore.scope_notice", label)
+	if len(rxScopes) == 0 {
+		errs = append(errs, field+" needs rx_scopes (on this bridge or under meshcore:): without an allowlist no message is ever rejected")
+	}
+	if readOnly {
+		errs = append(errs, field+" can't be used on a read_only bridge: the notice has to be transmitted")
+	}
+	if len(n.Scopes) == 0 {
+		errs = append(errs, field+".scopes must list at least one scope")
+	}
+	allowed := map[string]bool{}
+	for _, s := range rxScopes {
+		allowed[normScope(s)] = true
+	}
+	for _, s := range n.Scopes {
+		switch {
+		case strings.TrimSpace(s) == "":
+			errs = append(errs, field+".scopes must not contain an empty name")
+		case allowed[normScope(s)]:
+			errs = append(errs, fmt.Sprintf("%s.scopes: %q is also in rx_scopes, so its messages are relayed and never get a notice", field, s))
+		}
+	}
+	msg := strings.TrimSpace(n.Message)
+	switch {
+	case msg == "":
+		errs = append(errs, field+".message is required")
+	case len(msg) > maxScopeNoticeBytes:
+		errs = append(errs, fmt.Sprintf("%s.message must be at most %d bytes so the notice fits in one MeshCore message, got %d", field, maxScopeNoticeBytes, len(msg)))
+	}
+	if len(n.ResolvedName()) > 24 {
+		errs = append(errs, fmt.Sprintf("%s.name must be at most 24 bytes, got %d", field, len(n.ResolvedName())))
+	}
+	if n.CooldownS != 0 && (n.CooldownS < 60 || n.CooldownS > 86400) {
+		errs = append(errs, fmt.Sprintf("%s.cooldown_s must be between 60 and 86400 (seconds), or unset for %d, got %d", field, DefaultScopeNoticeCooldownS, n.CooldownS))
+	}
+	return errs
 }

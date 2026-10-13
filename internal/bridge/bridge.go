@@ -76,6 +76,11 @@ type mapping struct {
 	successRepeaters []string
 	minRepeaters     int
 	successObservers []string // lowercase CoreScope observer names/IDs (meshcore.success_observers)
+	// scopeNotice, when non-nil, replies to messages in one of its scopes
+	// that rxScopes rejects (meshcore.scope_notice); noticeScopeKey is the
+	// flood scope the reply is sent in. Valid iff meshcoreEnabled.
+	scopeNotice    *config.ScopeNotice
+	noticeScopeKey []byte
 
 	meshtasticEnabled bool // channel resolution happens live against whichever meshtastic.Session is attached (see outbound.go/inbound.go)
 }
@@ -151,6 +156,12 @@ type Bridge struct {
 	// holdForScope). Keyed by dedup key. Lazily created; guarded by mu;
 	// each entry is removed by its own timer or by releaseScopeHold.
 	scopeHolds map[string]*scopeHold
+	// noticeSent records when each sender (keyed by bridge name and sender)
+	// was last sent a scope notice, and noticeLast when each bridge last
+	// sent any, for scope_notice's rate limits. Lazily created; guarded by
+	// mu; swept once past the cooldown.
+	noticeSent map[string]time.Time
+	noticeLast map[string]time.Time
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
@@ -284,6 +295,10 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 			m.channelHash = chHash
 			m.scopeKey = bc.ResolvedScopeKey(cfg.Meshcore.FloodScope)
 			m.rxScopes = bc.ResolvedRxScopes(cfg.Meshcore.RxScopes)
+			if n := bc.MeshCore.ScopeNotice; n != nil {
+				m.scopeNotice = n
+				m.noticeScopeKey = bc.ReplyScopeKey(cfg.Meshcore.FloodScope)
+			}
 			for _, h := range bc.ResolvedIgnoreRepeatFrom(cfg.Meshcore.IgnoreRepeatFrom) {
 				decoded, err := hex.DecodeString(h)
 				if err != nil {
@@ -626,6 +641,11 @@ func (b *Bridge) sweep() {
 	for k, first := range b.recentContent {
 		if now.Sub(first) >= b.contentDedupWindow {
 			delete(b.recentContent, k)
+		}
+	}
+	for k, at := range b.noticeSent {
+		if now.Sub(at) > maxNoticeCooldown {
+			delete(b.noticeSent, k)
 		}
 	}
 }
