@@ -128,11 +128,17 @@ func TestBridge_DroppedDiscordMessageGetsWarningReaction(t *testing.T) {
 	fr := &fakeReactor{}
 	b.react = fr
 
-	block := make(chan struct{})
+	// Wedge the worker, and only once it's actually stuck fill the queue to
+	// capacity — otherwise the worker can dequeue after the fill and free a
+	// slot for the message under test.
+	block, wedged := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	b.enqueueRelay("general", func() { <-block })
+	b.enqueueRelay("general", func() { close(wedged); <-block })
+	<-wedged
 	for i := 0; i < relayQueueCap; i++ {
-		b.enqueueRelay("general", func() {})
+		if !b.enqueueRelay("general", func() {}) {
+			t.Fatalf("queue filled early at %d", i)
+		}
 	}
 
 	b.handleDiscordMessage(discordMsg("m1", "hello"))
