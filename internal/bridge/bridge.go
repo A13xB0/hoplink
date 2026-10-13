@@ -146,6 +146,11 @@ type Bridge struct {
 	// relayed, for dedup_window_s (see isRepeatedContent). Lazily created;
 	// guarded by mu.
 	recentContent map[string]time.Time
+	// scopeHolds parks device-sync deliveries for bridges with rx_scopes
+	// until the raw-log copy of the same packet proves its scope (see
+	// holdForScope). Keyed by dedup key. Lazily created; guarded by mu;
+	// each entry is removed by its own timer or by releaseScopeHold.
+	scopeHolds map[string]*scopeHold
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
