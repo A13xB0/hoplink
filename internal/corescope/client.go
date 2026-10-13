@@ -8,6 +8,7 @@ package corescope
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -79,12 +80,29 @@ func ParseMessage(frame []byte) (obs Observation, ok bool) {
 		var hops []string
 		if err := json.Unmarshal([]byte(*p.PathJSON), &hops); err == nil {
 			for _, h := range hops {
-				obs.Hops = append(obs.Hops, strings.ToLower(h))
+				if validHop(h) {
+					obs.Hops = append(obs.Hops, strings.ToLower(h))
+				}
 			}
 		}
 	}
 	return obs, true
 }
+
+// validHop reports whether h looks like a MeshCore hop hash: 1-4 bytes of
+// hex. The feed is remote input; anything else is dropped rather than fed
+// into delivery records and logs.
+func validHop(h string) bool {
+	if len(h) < 2 || len(h) > 8 || len(h)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(h)
+	return err == nil
+}
+
+// maxFrameBytes caps one WebSocket frame. CoreScope observations are a few
+// KB at most; this just keeps a misbehaving server from exhausting memory.
+const maxFrameBytes = 1 << 20
 
 // readTimeout bounds how long a connection may stay silent: CoreScope sends
 // a heartbeat every 30s, so missing three means the connection is dead.
@@ -130,6 +148,7 @@ func runOnce(ctx context.Context, url string, handle func(Observation)) (connect
 		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	conn.SetReadLimit(maxFrameBytes)
 	logf("connected to live feed %s", url)
 
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })

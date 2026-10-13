@@ -450,7 +450,8 @@ CoreScope observations arrive a few seconds late (observer → MQTT → CoreScop
 poll interval), so with it on, raise `meshcore.retry_wait_ms` (e.g. `15000`) so
 the retry decision waits for them. An observation arriving after the summary
 that newly confirms delivery is logged as `delivered after all: confirmed late
-by CoreScope observer "…"`.
+by CoreScope observer "…"`, and with `discord.delivery_reactions` on, the
+message's ⚠️ is swapped for ✅ once every unconfirmed chunk is confirmed.
 
 ### `coexistence:`
 

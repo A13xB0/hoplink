@@ -102,3 +102,41 @@ func TestCoreScope_UnrelatedAndMalformedHashesIgnored(t *testing.T) {
 		}
 	}
 }
+
+// A message reacted ⚠️ because nothing confirmed it in time is switched to
+// ✅ when late CoreScope evidence confirms it after all.
+func TestCoreScope_LateConfirmationUpgradesDiscordReaction(t *testing.T) {
+	buf := captureLog(t)
+	b, _, sent, _ := newDeliveryTestBridge(t)
+	fr := &fakeReactor{}
+	b.react = fr
+
+	b.handleDiscordMessage(discordMsg("m1", "hello"))
+	raw := <-sent
+	fr.waitFor(t, "m1 +"+reactAccepted, "m1 +"+reactUnconfirmed, "m1 -"+reactAccepted)
+
+	b.HandleCoreScopeObservation(obsFor(t, raw, "Townhall", "a1a1a1"))
+	waitForLog(t, buf, "delivered after all")
+	fr.waitFor(t, "m1 +"+reactAccepted, "m1 +"+reactUnconfirmed, "m1 -"+reactAccepted,
+		"m1 +"+reactDelivered, "m1 -"+reactUnconfirmed)
+}
+
+// With a multi-chunk message, the upgrade waits until every unconfirmed
+// chunk has been confirmed late.
+func TestCoreScope_LateUpgradeNeedsEveryUnconfirmedChunk(t *testing.T) {
+	b, _, sent, _ := newDeliveryTestBridge(t)
+	fr := &fakeReactor{}
+	b.react = fr
+
+	b.handleDiscordMessage(discordMsg("m1", strings.Repeat("x", meshcoreMaxChunkBytes+20)))
+	first, second := <-sent, <-sent
+	fr.waitFor(t, "m1 +"+reactAccepted, "m1 +"+reactUnconfirmed, "m1 -"+reactAccepted)
+
+	b.HandleCoreScopeObservation(obsFor(t, first, "Townhall", "a1a1a1"))
+	time.Sleep(200 * time.Millisecond)
+	fr.waitFor(t, "m1 +"+reactAccepted, "m1 +"+reactUnconfirmed, "m1 -"+reactAccepted) // still ⚠️
+
+	b.HandleCoreScopeObservation(obsFor(t, second, "Townhall", "a1a1a1"))
+	fr.waitFor(t, "m1 +"+reactAccepted, "m1 +"+reactUnconfirmed, "m1 -"+reactAccepted,
+		"m1 +"+reactDelivered, "m1 -"+reactUnconfirmed)
+}

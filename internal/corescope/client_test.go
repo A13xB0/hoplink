@@ -129,3 +129,14 @@ func TestRun_ReturnsOnCancelWhileServerUnreachable(t *testing.T) {
 		t.Fatal("Run did not return after ctx was cancelled")
 	}
 }
+
+func TestParseMessage_DropsNonHexHops(t *testing.T) {
+	obs, ok := ParseMessage([]byte(`{"type":"packet","data":{"hash":"3f9c0a6e1b2d7c48",` +
+		`"path_json":"[\"a1b2c3\",\"<script>\",\"zz\",\"abc\",\"0102030405\",\"\",\"d4e5\"]"}}`))
+	if !ok {
+		t.Fatal("expected an observation")
+	}
+	if strings.Join(obs.Hops, ",") != "a1b2c3,d4e5" {
+		t.Errorf("Hops = %v, want only the well-formed hex hop hashes", obs.Hops)
+	}
+}
