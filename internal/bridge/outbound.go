@@ -67,7 +67,7 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	// concurrent Discord messages go out in order and never interleave.
 	if m.meshcoreEnabled || m.meshtasticEnabled {
 		content, chanID, msgID := msg.Content, msg.ChannelID, msg.MessageID
-		b.enqueueRelay(m.cfg.Name, func() {
+		queued := b.enqueueRelay(m.cfg.Name, func() {
 			if m.meshcoreEnabled {
 				b.sendMeshcoreFrom(m, senderName, content, chanID, msgID)
 			}
@@ -75,6 +75,9 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 				b.sendMeshtastic(m, senderName, content)
 			}
 		})
+		if !queued && m.meshcoreEnabled && !m.cfg.MeshCore.ReadOnly {
+			b.newDiscordReceipt(chanID, msgID, 1).settle(false) // dropped: show ⚠️ rather than nothing
+		}
 	}
 	b.relayDiscordToSiblings(m, msg.AuthorName, msg.Content)
 }

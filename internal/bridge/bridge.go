@@ -386,11 +386,14 @@ func (b *Bridge) afterFunc(d time.Duration, fn func()) {
 // Discord->mesh message) to the single send worker, dropping it (with a
 // log, mirroring the rx channels' overflow behaviour) if the queue is full —
 // a stalled radio must not wedge inbound consumption or the Discord gateway.
-func (b *Bridge) enqueueRelay(bridgeName string, send func()) {
+// Reports whether it was queued.
+func (b *Bridge) enqueueRelay(bridgeName string, send func()) bool {
 	select {
 	case b.relayQ <- send:
+		return true
 	default:
 		logf("bridge %q: dropping outgoing mesh send: send queue is full (radio stalled or badly backlogged)", bridgeName)
+		return false
 	}
 }
 

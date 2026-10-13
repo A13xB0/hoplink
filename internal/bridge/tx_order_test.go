@@ -118,3 +118,23 @@ func TestBridge_TransmitMeshcore_SerialisesConcurrentCalls(t *testing.T) {
 		t.Errorf("second transmit came %s after the first; want >= min_tx_spacing", gap)
 	}
 }
+
+// A Discord message dropped because the send queue is full still gets a
+// ⚠️ when delivery reactions are on, rather than no feedback at all.
+func TestBridge_DroppedDiscordMessageGetsWarningReaction(t *testing.T) {
+	m, _ := newDualBackendMapping(t, "")
+	m.meshtasticEnabled = false
+	b := newTestBridge(m)
+	fr := &fakeReactor{}
+	b.react = fr
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	b.enqueueRelay("general", func() { <-block })
+	for i := 0; i < relayQueueCap; i++ {
+		b.enqueueRelay("general", func() {})
+	}
+
+	b.handleDiscordMessage(discordMsg("m1", "hello"))
+	fr.waitFor(t, "m1 +"+reactUnconfirmed)
+}
