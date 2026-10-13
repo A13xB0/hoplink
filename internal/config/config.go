@@ -41,8 +41,21 @@ type Config struct {
 	// suppression alone fires on every message this bridge itself relays.
 	// Meant for diagnosing "a message reached other devices but never made
 	// it to Discord/the other mesh". Default false.
-	Debug   bool     `yaml:"debug"`
-	Bridges []Bridge `yaml:"bridges"`
+	Debug bool `yaml:"debug"`
+	// DedupWindowS, when > 0, merges a mesh message whose sender and text
+	// exactly match one already relayed on the same channel within this many
+	// seconds — e.g. someone hitting "resend" in their app, which produces a
+	// brand-new packet (new timestamp / packet ID) the per-packet dedup
+	// can't recognise. 0 (the default) disables it: two genuinely separate
+	// identical messages ("ok", "yes") inside the window would also be
+	// merged, so this is opt-in. Bounded 0-3600.
+	DedupWindowS int      `yaml:"dedup_window_s"`
+	Bridges      []Bridge `yaml:"bridges"`
+}
+
+// DedupWindow returns dedup_window_s as a Duration (0 = disabled).
+func (c *Config) DedupWindow() time.Duration {
+	return time.Duration(c.DedupWindowS) * time.Second
 }
 
 // CoreScope optionally connects hoplink to a CoreScope server's live packet
@@ -270,6 +283,12 @@ func (m Meshtastic) ResolvedHopLimit() int {
 type Discord struct {
 	BotToken   string `yaml:"bot_token"`
 	NameSource string `yaml:"name_source"` // "display_name" (default) or "username"
+	// DeliveryReactions, when true, has the bot react to each Discord
+	// message it relays onto MeshCore with its delivery status: 📡 once the
+	// radio accepts it, then ✅ when every chunk's delivery is confirmed (see
+	// meshcore.min_repeaters / success_repeaters) or ⚠️ when it isn't. Needs
+	// the bot to have the Add Reactions permission. Default false.
+	DeliveryReactions bool `yaml:"delivery_reactions"`
 }
 
 // PreferDisplayName reports whether NameSource resolves to using the
@@ -647,6 +666,9 @@ func (c *Config) Validate() error {
 	}
 	if anySuccessObservers && strings.TrimSpace(c.CoreScope.URL) == "" {
 		errs = append(errs, "meshcore.success_observers needs corescope.url to be set (observations come from CoreScope's live feed)")
+	}
+	if c.DedupWindowS < 0 || c.DedupWindowS > 3600 {
+		errs = append(errs, fmt.Sprintf("dedup_window_s must be between 0 and 3600 (seconds), got %d", c.DedupWindowS))
 	}
 
 	anyMeshcore, anyMeshtastic, anyDiscord := false, false, false

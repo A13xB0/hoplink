@@ -54,6 +54,12 @@ debug: false   # when true, logs every inbound message this bridge suppresses
                # alone fires on every message this bridge itself relays, so
                # this is noisy in normal operation.
 
+dedup_window_s: 0   # when > 0, merge a mesh message whose sender + text exactly
+                    # match one already relayed on the same channel within this
+                    # many seconds (e.g. someone hitting "resend", which makes a
+                    # new packet). 0 = off; two separate identical messages
+                    # ("ok") inside the window would also be merged. 0-3600.
+
 meshcore:                # required only if some bridge has meshcore.enabled: true
   host: 192.168.4.1   # your companion radio's IP (its built-in WiFi/TCP server)
   port: 5000          # default MeshCore companion TCP port
@@ -199,6 +205,12 @@ discord:                # entirely optional — omit this whole block if no
                                # to embed as the mesh sender when a message has
                                # no per-server nickname set (server nickname
                                # always wins over either option when present).
+  delivery_reactions: false   # when true, the bot reacts to each Discord message
+                               # it sends onto MeshCore with its delivery status:
+                               # 📡 radio accepted it, then ✅ delivered (every
+                               # chunk confirmed — see meshcore.min_repeaters /
+                               # success_repeaters) or ⚠️ not confirmed. Needs
+                               # the bot's Add Reactions permission.
 
 limits:
   max_message_bytes: 320   # a Discord -> mesh message composed as "<Name>: <content>"

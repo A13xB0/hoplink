@@ -204,7 +204,8 @@ not on `ignore_repeat_from`; `min_repeaters` raises the count, and
 `success_repeaters` requires a specific repeater (anywhere in a copy's path) —
 useful for "it only really went out if the hilltop repeater carried it".
 With `retry_on_no_repeat` on, an unconfirmed message is retransmitted up to
-`max_retries` times. Note a retransmit is byte-identical, so repeaters that
+`max_retries` times. Set `discord.delivery_reactions: true` to show the
+outcome on the original Discord message too (📡 → ✅ / ⚠️). Note a retransmit is byte-identical, so repeaters that
 already relayed the original drop it as a duplicate — a retry only reaches
 repeaters that missed the first copy. Set `debug: true` to also log each
 individual copy and its path.
@@ -240,8 +241,9 @@ individual copy and its path.
      stripped out.
    - **OAuth2 → URL Generator** → check the `bot` scope, and under bot
      permissions check at least **Read Messages/View Channels** and **Read
-     Message History**. Open the generated URL and invite the bot to your
-     server(s).
+     Message History** (plus **Add Reactions** if you'll turn on
+     `discord.delivery_reactions`). Open the generated URL and invite the bot
+     to your server(s).
 
 3. **Create a webhook per Discord-bridged channel** (skip if none): in that
    channel's settings → Integrations → Webhooks → New Webhook → copy its URL
@@ -370,6 +372,7 @@ See `config.example.yaml` for a fully annotated example. Summary:
 |-----------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `sender_format` | `none`  | `none` \| `short` \| `full` — how a relayed message's origin surface is shown in the sender name on every *other* destination: "Alice" (none), "Alice (MC)" (short), or "Alice (MeshCore)" (full). Applies wherever a message crosses Discord/MeshCore/Meshtastic. Override per-bridge with `sender_format` under that bridge. |
 | `debug`         | `false` | Logs every inbound message a bridge receives *and* every one it suppresses and why (our own echo, a duplicate delivery, or no configured channel matched it) — across all four entry points (MeshCore raw log, MeshCore device-side sync, Meshtastic, Discord). Useful for diagnosing "a message reached other devices but never made it to Discord/the other mesh"; noisy in normal operation since self-echo suppression alone fires on every message a bridge itself relays |
+| `dedup_window_s` | `0` | When > 0, merges a mesh message whose sender and text exactly match one already relayed on the same channel within this many seconds — e.g. someone hitting "resend" in their app, which creates a brand-new packet that per-packet dedup can't recognise. Each merge is logged. Off by default because two genuinely separate identical messages ("ok") inside the window are merged too. `0`–`3600` |
 
 ### `meshcore:` (top-level)
 
@@ -418,6 +421,7 @@ bridge sets `discord_channel_id`.
 |---------------|----------------|----------------------------------------------------------------------------------------------------|
 | `bot_token`   | —              | Gateway bot token                                                                                  |
 | `name_source` | `display_name` | `display_name` \| `username` — which identity to use as the mesh sender when there's no per-server nickname (nickname always wins over either) |
+| `delivery_reactions` | `false` | When `true`, the bot reacts to each Discord message it sends onto MeshCore with its delivery status: 📡 once the radio accepts it, then ✅ if every chunk's delivery was confirmed (see [delivery summary](#meshcore-delivery-summary) and `meshcore.min_repeaters`/`success_repeaters`) or ⚠️ if not — after any `retry_on_no_repeat` retransmits. Reflects the MeshCore side only. Needs the bot's **Add Reactions** permission (a missing permission is logged, not fatal) |
 
 ### `limits:`
 

@@ -41,12 +41,21 @@ type delivery struct {
 	minRepeat  int        // the sending mapping's meshcore.min_repeaters
 	successObs []string   // the sending mapping's meshcore.success_observers (lowercase)
 	observers  []observer // CoreScope observers that reported hearing it, first-reported order
-	reported   bool       // summary already logged; later copies only count
+	// receipts are the originating Discord messages' delivery reactions —
+	// usually zero or one, but two identical sends in the same second (same
+	// text, same timestamp) are the same packet and share this record, so
+	// each of their receipts must be settled. Cleared once settled.
+	receipts []*discordReceipt
+	// lateReceipts are receipts this record settled as unconfirmed; a late
+	// CoreScope observation that confirms delivery after all upgrades them
+	// (see HandleCoreScopeObservation).
+	lateReceipts []*discordReceipt
+	reported     bool // summary already logged; later copies only count
 }
 
 // trackDelivery records an attempt to send the packet hashed h — creating
 // the record on the first attempt.
-func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int) {
+func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int, rc *discordReceipt) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.deliveries == nil {
@@ -68,6 +77,18 @@ func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chun
 	}
 	d.attempts++
 	d.reported = false
+	if rc != nil && !containsReceipt(d.receipts, rc) {
+		d.receipts = append(d.receipts, rc)
+	}
+}
+
+func containsReceipt(list []*discordReceipt, rc *discordReceipt) bool {
+	for _, r := range list {
+		if r == rc {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetDelivery drops h's record — used when its very first send failed,
@@ -206,8 +227,16 @@ func (b *Bridge) reportDelivery(h meshcore.PacketHash) {
 	}
 	d.reported = true
 	line := d.summary(h)
+	receipts, confirmed := d.receipts, d.confirmed()
+	d.receipts = nil
+	if !confirmed {
+		d.lateReceipts = append(d.lateReceipts, receipts...)
+	}
 	b.mu.Unlock()
 	logfMeshcore("%s", line)
+	for _, rc := range receipts {
+		rc.settle(confirmed)
+	}
 }
 
 // summary renders d as a log line. Caller holds b.mu.
@@ -309,12 +338,19 @@ func (b *Bridge) HandleCoreScopeObservation(obs corescope.Observation) {
 		d.observers = append(d.observers, o)
 	}
 	late := d.reported && !wasConfirmed && d.confirmed()
+	var upgrade []*discordReceipt
+	if late {
+		upgrade, d.lateReceipts = d.lateReceipts, nil
+	}
 	name, idx, total := d.bridge, d.chunkIdx, d.chunkTotal
 	b.mu.Unlock()
 
 	b.debugMeshcore("RX CoreScope observer %q heard our packet %s for bridge %q, path [%s]", o.label(), h, name, strings.Join(obs.Hops, " -> "))
 	if late {
 		logfMeshcore("TX bridge %q: chunk %d/%d (packet %s) delivered after all: confirmed late by CoreScope observer %q", name, idx, total, h, o.label())
+		for _, rc := range upgrade {
+			rc.lateConfirm()
+		}
 	}
 }
 

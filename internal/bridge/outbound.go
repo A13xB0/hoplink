@@ -64,7 +64,7 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 	}
 
 	if m.meshcoreEnabled {
-		b.sendMeshcore(m, senderName, msg.Content)
+		b.sendMeshcoreFrom(m, senderName, msg.Content, msg.ChannelID, msg.MessageID)
 	}
 	if m.meshtasticEnabled {
 		b.sendMeshtastic(m, senderName, msg.Content)
@@ -98,15 +98,23 @@ func (b *Bridge) relayDiscordToSiblings(m *mapping, rawSender, content string) {
 }
 
 func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
+	b.sendMeshcoreFrom(m, name, content, "", "")
+}
+
+// sendMeshcoreFrom is sendMeshcore for a message that originated as Discord
+// message discordMsgID in discordChanID (both "" otherwise), so its delivery
+// status can be reacted onto it (discord.delivery_reactions).
+func (b *Bridge) sendMeshcoreFrom(m *mapping, name, content, discordChanID, discordMsgID string) {
 	if m.cfg.MeshCore.ReadOnly {
 		return // this bridge's MeshCore side only ever receives; never transmits
 	}
 	chunks := composeChunks(name, content, meshcoreMaxChunkBytes)
+	rc := b.newDiscordReceipt(discordChanID, discordMsgID, len(chunks))
 	for i, chunk := range chunks {
 		if i > 0 && b.meshcoreChunkDelay > 0 {
 			time.Sleep(b.meshcoreChunkDelay)
 		}
-		b.transmitMeshcore(m, chunk, uint32(time.Now().Unix()), i+1, len(chunks), 0)
+		b.transmitMeshcoreFor(m, chunk, uint32(time.Now().Unix()), i+1, len(chunks), 0, rc)
 	}
 }
 
@@ -126,17 +134,31 @@ func (b *Bridge) sendMeshcore(m *mapping, name, content string) {
 // messages — so listening for our own packet re-flooded genuinely is the
 // best available confirmation.)
 func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int) {
-	session := b.meshcoreSessionRef()
-	if session == nil {
-		logfMeshcore("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
-		return
-	}
+	b.transmitMeshcoreFor(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt, nil)
+}
+
+// transmitMeshcoreFor is transmitMeshcore carrying rc, the originating
+// Discord message's delivery receipt (nil if none). Every chunk settles rc
+// exactly once: directly if its first attempt never makes it out, otherwise
+// via reportDelivery when the send settles.
+func (b *Bridge) transmitMeshcoreFor(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int, rc *discordReceipt) {
 	pkt, err := meshcore.BuildChannelPacket(m.secret, b.hashSize, m.scopeKey, chunk, tsUnix)
 	if err != nil {
 		logfMeshcore("TX bridge %q: building packet failed (chunk %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, err)
+		rc.settle(false)
 		return
 	}
 	pktHash := pkt.Hash()
+	session := b.meshcoreSessionRef()
+	if session == nil {
+		logfMeshcore("TX bridge %q: not connected; dropping outgoing message", m.cfg.Name)
+		if attempt == 0 {
+			rc.settle(false)
+		} else {
+			b.reportDelivery(pktHash) // a retry with no session: settle what the earlier attempts achieved
+		}
+		return
+	}
 	echoKey := meshcoreEchoKey(m.channelHash, chunk)
 	// Listen-before-talk: wait for quiet air (and our own min TX spacing)
 	// before hitting the channel — bounded, so a message is never held
@@ -150,7 +172,7 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 	b.waitForQuietAir(deferCap, fmt.Sprintf("bridge %q chunk %d/%d", m.cfg.Name, chunkIdx, chunkTotal))
 	b.markOwnPacket(meshcoreDedupKey(m.channelHash, tsUnix, chunk))
 	b.markOutboundSent(echoKey, m.ignoreRepeatFrom...)
-	b.trackDelivery(pktHash, m, chunkIdx, chunkTotal)
+	b.trackDelivery(pktHash, m, chunkIdx, chunkTotal, rc)
 	err = b.withTxGuard(func() error {
 		return session.SendPacket(pkt)
 	})
@@ -159,12 +181,14 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 		logfMeshcore("TX bridge %q: send failed (chunk %d/%d, attempt %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, attempt+1, b.mcMaxRetries()+1, err)
 		if attempt == 0 {
 			b.forgetDelivery(pktHash) // never went out: nothing to report
+			rc.settle(false)
 		} else {
 			b.reportDelivery(pktHash)
 		}
 		return
 	}
 	b.noteOwnTx(len(chunk))
+	rc.markAccepted()
 	logfMeshcore("TX bridge %q: sent %d bytes to channel_hash %#x (chunk %d/%d, attempt %d/%d, packet %s): radio accepted", m.cfg.Name, len(chunk), m.channelHash, chunkIdx, chunkTotal, attempt+1, b.mcMaxRetries()+1, pktHash)
 	// After the wait: retransmit if retry_on_no_repeat is on and the
 	// delivery rule isn't satisfied yet, otherwise the send has settled —
@@ -177,7 +201,7 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 			b.echoUnheard(echoKey) // release this attempt's pending-echo slot either way
 			if !b.deliveryConfirmed(pktHash) {
 				logfMeshcore("TX bridge %q: delivery not confirmed within %s (needs %s), retransmitting", m.cfg.Name, b.meshcoreRetryWait, b.deliveryRule(pktHash))
-				b.transmitMeshcore(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1)
+				b.transmitMeshcoreFor(m, chunk, tsUnix, chunkIdx, chunkTotal, attempt+1, rc)
 				return
 			}
 		}

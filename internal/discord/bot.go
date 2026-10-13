@@ -124,3 +124,20 @@ func (b *Bot) Reply(channelID, messageID, content string) error {
 	}
 	return nil
 }
+
+// React adds emoji (a Unicode emoji, e.g. "✅") as a reaction from the bot
+// to messageID in channelID. Needs the Add Reactions permission.
+func (b *Bot) React(channelID, messageID, emoji string) error {
+	if err := b.session.MessageReactionAdd(channelID, messageID, emoji); err != nil {
+		return fmt.Errorf("discord: adding reaction %s: %w", emoji, err)
+	}
+	return nil
+}
+
+// Unreact removes the bot's own emoji reaction from messageID in channelID.
+func (b *Bot) Unreact(channelID, messageID, emoji string) error {
+	if err := b.session.MessageReactionRemove(channelID, messageID, emoji, "@me"); err != nil {
+		return fmt.Errorf("discord: removing reaction %s: %w", emoji, err)
+	}
+	return nil
+}
