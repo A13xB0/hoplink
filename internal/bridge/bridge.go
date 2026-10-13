@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,17 +24,22 @@ import (
 
 // inboundDedupTTL bounds how long an inbound-message dedup key is
 // remembered to suppress duplicate delivery of the same flooded packet
-// arriving via multiple relay hops.
-const inboundDedupTTL = 60 * time.Second
+// arriving via multiple relay hops. Our own outbound packets are seeded into
+// the same set at send time (see markOwnPacket), so this is also how long a
+// late echo of something we sent is still recognised as ours. Generous on
+// purpose: a multi-hop flood on a busy, duty-cycled mesh can straggle back
+// well after a minute, and each entry is only a short string.
+const inboundDedupTTL = 10 * time.Minute
 
 // selfEchoTTL is the floor for how long a just-sent outbound-echo key is
-// remembered — both to suppress our own outbound message being re-delivered
-// to Discord after the mesh floods it back to us, and (see
-// effectiveSelfEchoTTL) as the minimum retry_on_no_repeat pending window.
+// tracked for retry_on_no_repeat accounting (see effectiveSelfEchoTTL).
+// Suppressing our own echo from being reposted no longer depends on this —
+// see markOwnPacket.
 const selfEchoTTL = 10 * time.Second
 
-// maxRepeatRetries caps how many times a single message is retransmitted for
-// never being heard repeated — one retry, not an unbounded loop.
+// maxRepeatRetries caps how many times a single Meshtastic message is
+// retransmitted for never being heard repeated — one retry, not an unbounded
+// loop. MeshCore's cap is configurable (meshcore.max_retries, mcMaxRetries).
 const maxRepeatRetries = 1
 
 // relayQueueCap bounds the outbound mesh send queue (see Bridge.relayQ) —
@@ -63,6 +69,13 @@ type mapping struct {
 	// meshcore.ignore_repeat_from and consumeSelfEcho. Valid iff
 	// meshcoreEnabled; empty means every repeater's relay counts.
 	ignoreRepeatFrom [][]byte
+	// successRepeaters / minRepeaters are the resolved delivery rule (see
+	// meshcore.success_repeaters / min_repeaters and delivery.confirmed):
+	// lowercase hex hop hashes, empty = any non-ignored repeater counts.
+	// Valid iff meshcoreEnabled.
+	successRepeaters []string
+	minRepeaters     int
+	successObservers []string // lowercase CoreScope observer names/IDs (meshcore.success_observers)
 
 	meshtasticEnabled bool // channel resolution happens live against whichever meshtastic.Session is attached (see outbound.go/inbound.go)
 }
@@ -82,14 +95,17 @@ type notifier interface {
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
 	notify                    notifier
-	hashSize                  int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
-	meshtasticHopLimit        uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
+	react                     reactor // non-nil iff discord.delivery_reactions (see receipt.go)
+	hashSize                  int     // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	meshtasticHopLimit        uint32  // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
 	debug                     bool
+	contentDedupWindow        time.Duration // dedup_window_s — merge identical sender+text re-sends; 0 = off (see isRepeatedContent)
 	meshcoreRetryOnNoRepeat   bool          // meshcore.retry_on_no_repeat — see maxRepeatRetries
 	meshtasticRetryOnNoRepeat bool          // meshtastic.retry_on_no_repeat — mirrors meshcoreRetryOnNoRepeat
 	meshcoreChunkDelay        time.Duration // meshcore.chunk_delay_ms — extra pause between chunks of a split message
 	meshtasticChunkDelay      time.Duration // meshtastic.chunk_delay_ms — extra pause between chunks of a split message
 	meshcoreRetryWait         time.Duration // meshcore.retry_wait_ms — how long transmitMeshcore waits for a repeat before retrying
+	meshcoreMaxRetries        int           // meshcore.max_retries — retransmits allowed while delivery is unconfirmed (see mcMaxRetries)
 	busyWaitEnabled           bool          // meshcore.busy_wait — listen-before-talk on MeshCore TX
 	busyMaxDefer              time.Duration // meshcore.busy_max_defer_ms — cap per-TX quiet-air wait
 	minTxSpacing              time.Duration // meshcore.min_tx_spacing_ms — gap between our own TXs
@@ -122,6 +138,14 @@ type Bridge struct {
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
 	recentOutbound map[string]pendingEcho
+	// deliveries tracks our own MeshCore sends by packet hash, recording
+	// every relayed copy heard (see delivery.go). Lazily created; guarded
+	// by mu; swept after inboundDedupTTL.
+	deliveries map[meshcore.PacketHash]*delivery
+	// recentContent maps a channel+sender+text key to when it was first
+	// relayed, for dedup_window_s (see isRepeatedContent). Lazily created;
+	// guarded by mu.
+	recentContent map[string]time.Time
 	// mtWarnedChan tracks meshtastic channel_names we've already warned about
 	// being absent from the attached device, so a genuinely-misconfigured
 	// bridge is surfaced once rather than on every inbound message. Guarded by
@@ -205,11 +229,13 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 		hashSize:                  cfg.Meshcore.PathHashBytes,
 		meshtasticHopLimit:        uint32(cfg.Meshtastic.ResolvedHopLimit()),
 		debug:                     cfg.Debug,
+		contentDedupWindow:        cfg.DedupWindow(),
 		meshcoreRetryOnNoRepeat:   cfg.Meshcore.RetryOnNoRepeat,
 		meshtasticRetryOnNoRepeat: cfg.Meshtastic.RetryOnNoRepeat,
 		meshcoreChunkDelay:        cfg.Meshcore.ChunkDelay(),
 		meshtasticChunkDelay:      cfg.Meshtastic.ChunkDelay(),
 		meshcoreRetryWait:         cfg.Meshcore.RetryWait(),
+		meshcoreMaxRetries:        cfg.Meshcore.MaxRetries,
 		busyWaitEnabled:           cfg.Meshcore.BusyWaitEnabled(),
 		busyMaxDefer:              cfg.Meshcore.BusyMaxDefer(),
 		minTxSpacing:              cfg.Meshcore.MinTxSpacing(),
@@ -260,6 +286,13 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 				}
 				m.ignoreRepeatFrom = append(m.ignoreRepeatFrom, decoded)
 			}
+			for _, h := range bc.ResolvedSuccessRepeaters(cfg.Meshcore.SuccessRepeaters) {
+				m.successRepeaters = append(m.successRepeaters, strings.ToLower(h))
+			}
+			m.minRepeaters = bc.ResolvedMinRepeaters(cfg.Meshcore.MinRepeaters)
+			for _, o := range bc.ResolvedSuccessObservers(cfg.Meshcore.SuccessObservers) {
+				m.successObservers = append(m.successObservers, strings.ToLower(o))
+			}
 		}
 		b.byName = append(b.byName, m)
 		if discordEnabled {
@@ -269,6 +302,9 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 
 	if bot != nil {
 		b.notify = bot
+		if cfg.Discord.DeliveryReactions {
+			b.react = bot
+		}
 		bot.OnMessage(b.handleDiscordMessage)
 	}
 	return b, nil
@@ -574,6 +610,25 @@ func (b *Bridge) sweep() {
 			delete(b.recentOutbound, k)
 		}
 	}
+	for h, d := range b.deliveries {
+		if now.Sub(d.firstSent) > inboundDedupTTL {
+			delete(b.deliveries, h)
+		}
+	}
+	for k, first := range b.recentContent {
+		if now.Sub(first) >= b.contentDedupWindow {
+			delete(b.recentContent, k)
+		}
+	}
+}
+
+// mcMaxRetries returns meshcore.max_retries, defaulting to 1 for Bridges
+// built without a config (tests).
+func (b *Bridge) mcMaxRetries() int {
+	if b.meshcoreMaxRetries < 1 {
+		return 1
+	}
+	return b.meshcoreMaxRetries
 }
 
 // effectiveSelfEchoTTL returns how long a pending outbound-echo key survives

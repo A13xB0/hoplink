@@ -1792,3 +1792,134 @@ func TestLoad_RejectsOutOfRangeBusyKnobs(t *testing.T) {
 		t.Fatalf("expected a meshcore.min_tx_spacing_ms error, got %v", err)
 	}
 }
+
+func TestLoad_DeliveryRuleDefaults(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshcore.MinRepeaters != 1 || cfg.Meshcore.MaxRetries != 1 || len(cfg.Meshcore.SuccessRepeaters) != 0 {
+		t.Errorf("defaults = min_repeaters %d, max_retries %d, success_repeaters %v; want 1, 1, []",
+			cfg.Meshcore.MinRepeaters, cfg.Meshcore.MaxRetries, cfg.Meshcore.SuccessRepeaters)
+	}
+}
+
+func TestLoad_DeliveryRuleIsConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, configWithMeshcore(`  success_repeaters: ["a1b2c3"]
+  min_repeaters: 2
+  max_retries: 3`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshcore.MinRepeaters != 2 || cfg.Meshcore.MaxRetries != 3 || len(cfg.Meshcore.SuccessRepeaters) != 1 {
+		t.Errorf("got min_repeaters %d, max_retries %d, success_repeaters %v", cfg.Meshcore.MinRepeaters, cfg.Meshcore.MaxRetries, cfg.Meshcore.SuccessRepeaters)
+	}
+}
+
+func TestLoad_DeliveryRuleValidation(t *testing.T) {
+	for field, want := range map[string]string{
+		`  success_repeaters: ["zz"]`: "meshcore.success_repeaters",
+		`  min_repeaters: 17`:         "meshcore.min_repeaters",
+		`  min_repeaters: -1`:         "meshcore.min_repeaters",
+		`  max_retries: 6`:            "meshcore.max_retries",
+		`  max_retries: -2`:           "meshcore.max_retries",
+	} {
+		_, err := Load(writeTemp(t, configWithMeshcore(field)))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want error mentioning %q, got %v", strings.TrimSpace(field), want, err)
+		}
+	}
+}
+
+func TestLoad_DeliveryRulePerBridgeOverride(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal+`      success_repeaters: ["d4e5f6"]
+      min_repeaters: 3
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := cfg.Bridges[0]
+	if got := b.ResolvedSuccessRepeaters(cfg.Meshcore.SuccessRepeaters); len(got) != 1 || got[0] != "d4e5f6" {
+		t.Errorf("ResolvedSuccessRepeaters = %v", got)
+	}
+	if got := b.ResolvedMinRepeaters(cfg.Meshcore.MinRepeaters); got != 3 {
+		t.Errorf("ResolvedMinRepeaters = %d, want 3", got)
+	}
+	var plain Bridge
+	if got := plain.ResolvedMinRepeaters(1); got != 1 {
+		t.Errorf("no override: ResolvedMinRepeaters = %d, want the global 1", got)
+	}
+}
+
+func TestLoad_CoreScopeURLValidation(t *testing.T) {
+	ok := validMinimal + "corescope:\n  url: wss://corescope.example/ws\n"
+	if _, err := Load(writeTemp(t, ok)); err != nil {
+		t.Errorf("wss URL should be accepted: %v", err)
+	}
+	for _, bad := range []string{"https://corescope.example/ws", "corescope.example", "wss://"} {
+		_, err := Load(writeTemp(t, validMinimal+"corescope:\n  url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "corescope.url") {
+			t.Errorf("%q: want a corescope.url error, got %v", bad, err)
+		}
+	}
+}
+
+func TestLoad_SuccessObserversNeedCoreScope(t *testing.T) {
+	_, err := Load(writeTemp(t, configWithMeshcore(`  success_observers: ["far-side"]`)))
+	if err == nil || !strings.Contains(err.Error(), "corescope.url") {
+		t.Fatalf("want an error pointing at corescope.url, got %v", err)
+	}
+	cfg, err := Load(writeTemp(t, configWithMeshcore(`  success_observers: ["far-side"]`)+"corescope:\n  url: ws://localhost:3000/ws\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Bridges[0].ResolvedSuccessObservers(cfg.Meshcore.SuccessObservers); len(got) != 1 || got[0] != "far-side" {
+		t.Errorf("ResolvedSuccessObservers = %v", got)
+	}
+}
+
+func TestLoad_DeliveryReactionsDefaultOffAndConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Discord.DeliveryReactions {
+		t.Error("delivery_reactions should default to false")
+	}
+	cfg, err = Load(writeTemp(t, configWithDiscord(`  delivery_reactions: true`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Discord.DeliveryReactions {
+		t.Error("delivery_reactions: true not honoured")
+	}
+}
+
+func TestLoad_DedupWindowDefaultsToDisabled(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DedupWindow() != 0 {
+		t.Errorf("DedupWindow() = %s, want 0 (disabled) by default", cfg.DedupWindow())
+	}
+}
+
+func TestLoad_DedupWindowIsConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal+"dedup_window_s: 120\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DedupWindow() != 120*time.Second {
+		t.Errorf("DedupWindow() = %s, want 2m0s", cfg.DedupWindow())
+	}
+}
+
+func TestLoad_DedupWindowOutOfRangeRejected(t *testing.T) {
+	for _, v := range []string{"-1", "3601"} {
+		_, err := Load(writeTemp(t, validMinimal+"dedup_window_s: "+v+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "dedup_window_s") {
+			t.Errorf("dedup_window_s: %s: want a dedup_window_s validation error, got %v", v, err)
+		}
+	}
+}

@@ -26,6 +26,10 @@ func (b *Bridge) handleMeshcorePacket(lrx meshcore.LogRxData) {
 	if lrx.Packet.PayloadType != meshcore.PayloadTypeGrpTxt {
 		return
 	}
+	// Delivery tracking: a relayed copy of one of our own sends. Recorded
+	// here, then falls through to the normal path, whose self-echo / dedup
+	// checks keep it from being reposted.
+	b.observeOwnCopy(lrx.Packet)
 
 	var dec meshcore.GroupTextDecrypt
 	var channelHash byte
@@ -122,7 +126,12 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
+		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed or sent this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
+		return
+	}
+
+	if b.isRepeatedContent(meshcoreContentKey(channelHash, text)) {
+		logfMeshcore("RX merging %q on channel_hash %#x: identical to a message relayed within the last %s (dedup_window_s)", text, channelHash, b.contentDedupWindow)
 		return
 	}
 
@@ -225,7 +234,12 @@ func (b *Bridge) handleMeshtasticMessage(session *meshtastic.Session, msg meshta
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
-		b.debugMeshtastic("RX suppressing %q on channel index %d as a duplicate delivery (already relayed this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
+		b.debugMeshtastic("RX suppressing %q on channel index %d as a duplicate delivery (already relayed or sent this exact packet within the last %s)", msg.Text, msg.ChannelIndex, inboundDedupTTL)
+		return
+	}
+
+	if b.isRepeatedContent(meshtasticContentKey(msg.ChannelIndex, msg.From, msg.Text)) {
+		logfMeshtastic("RX merging %q from %s on channel index %d: identical to a message relayed within the last %s (dedup_window_s)", msg.Text, msg.FromName, msg.ChannelIndex, b.contentDedupWindow)
 		return
 	}
 
@@ -277,6 +291,19 @@ func meshcoreDedupKey(channelHash byte, timestampUnix uint32, text string) strin
 
 func meshcoreEchoKey(channelHash byte, text string) string {
 	return fmt.Sprintf("mc|%d|%s", channelHash, text)
+}
+
+// Content keys (dedup_window_s) deliberately omit the per-packet identity
+// (timestamp / packet ID): they exist to catch a re-send of the same text,
+// which is a new packet. MeshCore's text already carries the "Sender: "
+// prefix; Meshtastic's sender is the protocol-native node number.
+
+func meshcoreContentKey(channelHash byte, text string) string {
+	return fmt.Sprintf("mcc|%d|%s", channelHash, text)
+}
+
+func meshtasticContentKey(channelIndex, from uint32, text string) string {
+	return fmt.Sprintf("mtc|%d|%d|%s", channelIndex, from, text)
 }
 
 func meshtasticDedupKey(channelIndex, packetID uint32, text string) string {
@@ -335,6 +362,45 @@ func (b *Bridge) isDuplicateInbound(key string) bool {
 	}
 	b.recentInbound[key] = time.Now()
 	return false
+}
+
+// isRepeatedContent reports whether contentKey (see meshcoreContentKey /
+// meshtasticContentKey) was first relayed less than dedup_window_s ago,
+// recording it if not. The window runs from the first relay and is not
+// extended by merged repeats, so someone legitimately repeating themselves
+// periodically still gets through once per window. Always false when
+// dedup_window_s is 0.
+func (b *Bridge) isRepeatedContent(contentKey string) bool {
+	if b.contentDedupWindow <= 0 {
+		return false
+	}
+	now := time.Now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if first, ok := b.recentContent[contentKey]; ok && now.Sub(first) < b.contentDedupWindow {
+		return true
+	}
+	if b.recentContent == nil {
+		b.recentContent = make(map[string]time.Time)
+	}
+	b.recentContent[contentKey] = now
+	return false
+}
+
+// markOwnPacket records the dedup key of a packet we are about to transmit
+// in recentInbound, exactly as if it had already been delivered once. Any
+// copy the mesh floods back to us — however late, via either MeshCore
+// inbound path, and regardless of what retry_on_no_repeat's pending-echo
+// accounting (recentOutbound) has done with it in the meantime — then hits
+// the ordinary duplicate check and is never reposted or relayed as new
+// content. recentOutbound alone can't guarantee that: its entries are
+// consumed by the first echo or by the retry check and expire after
+// selfEchoTTL, after which a straggling echo looked like a fresh message.
+// Re-marking (a retransmit) refreshes the entry's age.
+func (b *Bridge) markOwnPacket(dedupKey string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recentInbound[dedupKey] = time.Now()
 }
 
 // selfEchoOutcome classifies what happened when a delivered message matched

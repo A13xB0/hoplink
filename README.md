@@ -181,6 +181,35 @@ client (and the companion apps' own UI) expects it there too. If slot 0
 already holds a different, non-empty channel, hoplink refuses to overwrite
 it and falls back to raw-log-only reception for that bridge (logged).
 
+### MeshCore: delivery summary
+
+GRP_TXT channel messages have no ack, so the only evidence a message made it
+onto the mesh is hearing repeaters relay it back. Every MeshCore message
+hoplink sends is tracked by its packet hash (the same 8-byte identity
+repeaters use for their own duplicate suppression, and that
+[CoreScope](https://github.com/Kpa-clawbot/CoreScope) shows as `hash`), and
+every relayed copy the radio hears is recorded — including **every** repeater
+in that copy's path, not just the nearest one. Once the send has settled
+(after `retry_wait_ms`, and after the retransmit if `retry_on_no_repeat`
+fired), one summary line is logged per chunk:
+
+```
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 3f9c0a6e1b2d7c48) delivered: 3 copies heard via 4 repeaters [a1b2c3, d4e5f6, 0919aa, 77e0c1] after 1 attempt
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 51e0c2aa9b7d3f10) NOT confirmed: 1 copy heard via 1 repeater [a1b2c3], but the rule needs 1 repeater including one of [d4e5f6], after 2 attempts
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 9a01b2c3d4e5f607) NOT confirmed: no relayed copy heard after 2 attempts
+```
+
+What counts as **delivered** is configurable: by default, any one repeater
+not on `ignore_repeat_from`; `min_repeaters` raises the count, and
+`success_repeaters` requires a specific repeater (anywhere in a copy's path) —
+useful for "it only really went out if the hilltop repeater carried it".
+With `retry_on_no_repeat` on, an unconfirmed message is retransmitted up to
+`max_retries` times. Set `discord.delivery_reactions: true` to show the
+outcome on the original Discord message too (📡 → ✅ / ⚠️). Note a retransmit is byte-identical, so repeaters that
+already relayed the original drop it as a duplicate — a retry only reaches
+repeaters that missed the first copy. Set `debug: true` to also log each
+individual copy and its path.
+
 ## Requirements
 
 - Go 1.26+ (see `go.mod`)
@@ -212,8 +241,9 @@ it and falls back to raw-log-only reception for that bridge (logged).
      stripped out.
    - **OAuth2 → URL Generator** → check the `bot` scope, and under bot
      permissions check at least **Read Messages/View Channels** and **Read
-     Message History**. Open the generated URL and invite the bot to your
-     server(s).
+     Message History** (plus **Add Reactions** if you'll turn on
+     `discord.delivery_reactions`). Open the generated URL and invite the bot
+     to your server(s).
 
 3. **Create a webhook per Discord-bridged channel** (skip if none): in that
    channel's settings → Integrations → Webhooks → New Webhook → copy its URL
@@ -342,6 +372,7 @@ See `config.example.yaml` for a fully annotated example. Summary:
 |-----------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `sender_format` | `none`  | `none` \| `short` \| `full` — how a relayed message's origin surface is shown in the sender name on every *other* destination: "Alice" (none), "Alice (MC)" (short), or "Alice (MeshCore)" (full). Applies wherever a message crosses Discord/MeshCore/Meshtastic. Override per-bridge with `sender_format` under that bridge. |
 | `debug`         | `false` | Logs every inbound message a bridge receives *and* every one it suppresses and why (our own echo, a duplicate delivery, or no configured channel matched it) — across all four entry points (MeshCore raw log, MeshCore device-side sync, Meshtastic, Discord). Useful for diagnosing "a message reached other devices but never made it to Discord/the other mesh"; noisy in normal operation since self-echo suppression alone fires on every message a bridge itself relays |
+| `dedup_window_s` | `0` | When > 0, merges a mesh message whose sender and text exactly match one already relayed on the same channel within this many seconds — e.g. someone hitting "resend" in their app, which creates a brand-new packet that per-packet dedup can't recognise. Each merge is logged. Off by default because two genuinely separate identical messages ("ok") inside the window are merged too. `0`–`3600` |
 
 ### `meshcore:` (top-level)
 
@@ -355,13 +386,17 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 | `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "MeshCore: two independent receive paths" above); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
-| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within `retry_wait_ms` of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on. When a repeat *is* heard, a log line names which repeater(s) relayed it (their hop hash, nearest-to-us last); when none is heard, a log line says so just before the single retransmit |
+| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message (up to `max_retries` times) if its delivery isn't confirmed within `retry_wait_ms` of sending — by default, if no repeater was heard relaying it back; see `success_repeaters`/`min_repeaters` to tighten that, and [delivery summary](#meshcore-delivery-summary). Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on. When a repeat *is* heard, a log line names which repeater(s) relayed it (their hop hash, nearest-to-us last); when delivery is unconfirmed, a log line says so just before each retransmit |
 | `chunk_delay_ms` | `0` | Extra pause (milliseconds) held between each piece of a message split across multiple MeshCore chunks (see `limits.max_message_bytes`). `0` sends every chunk back-to-back; raise it if a receiving node/repeater tends to miss or garble chunks sent in quick succession |
 | `retry_wait_ms` | `8000` | How long `retry_on_no_repeat` waits after sending before deciding no repeat was heard and retransmitting once. Must be between `1000` and `120000` (1s-2min) — bounded so it can't fire before a real repeat could plausibly arrive, or be left waiting so long the bridge looks stuck when it's really just still listening |
 | `busy_wait` | `true` | Listen before talking: outgoing transmissions (and `retry_on_no_repeat` retransmits) wait for the channel to go quiet — sensed by computing the LoRa airtime of every packet in the raw RF log — before hitting the air, and keep `min_tx_spacing_ms` between hoplink's own transmissions. Prevents a lively Discord channel from machine-gunning the mesh; retry timers are also jittered ±20% so two nodes that collided once don't re-collide every round. Set `false` to transmit immediately as before |
 | `busy_max_defer_ms` | `8000` | Cap on how long `busy_wait` may hold one transmission waiting for quiet air (a message is never held hostage; the radio still does its own carrier sensing underneath). `0`–`60000` |
 | `min_tx_spacing_ms` | `3000` | Minimum gap between hoplink's own MeshCore transmissions while `busy_wait` is on. `0`–`30000` |
 | `ignore_repeat_from` | `[]` | Optional list of repeater hop hashes (hex, e.g. `["a1b2c3"]` — find the hex to use in the "repeat heard ... relayed via" log line) whose relay of one of our own messages does *not* count as "the mesh repeated it": if the only repeat heard came from one of these, hoplink still retransmits. Useful for a repeater that reliably rebroadcasts within earshot of our own radio but is known not to actually extend the mesh further. Default for every bridge — override per-bridge with `meshcore.ignore_repeat_from` |
+| `success_repeaters` | `[]` | Optional list of repeater hop hashes (hex). When set, a message only counts as **delivered** once one of these appears in the path of a relayed copy hoplink hears — e.g. the repeater that carries traffic out of your area — rather than any repeater at all. Matched by prefix, so a 3-byte hash also matches the same repeater's 2-byte hash. Override per-bridge with `meshcore.success_repeaters` |
+| `min_repeaters` | `1` | How many distinct (non-ignored) repeaters must be heard relaying a message for it to count as delivered. `1`–`16`. Override per-bridge with `meshcore.min_repeaters` |
+| `max_retries` | `1` | How many times `retry_on_no_repeat` may retransmit one message while its delivery is unconfirmed. `1`–`5` |
+| `success_observers` | `[]` | Optional list of [CoreScope](#corescope-top-level) observer names or IDs (case-insensitive). A message also counts as delivered once any of them reports hearing it — an alternative to the repeater rule, not an extra requirement. Needs `corescope.url`. Override per-bridge with `meshcore.success_observers` |
 
 ### `meshtastic:` (top-level)
 
@@ -386,12 +421,37 @@ bridge sets `discord_channel_id`.
 |---------------|----------------|----------------------------------------------------------------------------------------------------|
 | `bot_token`   | —              | Gateway bot token                                                                                  |
 | `name_source` | `display_name` | `display_name` \| `username` — which identity to use as the mesh sender when there's no per-server nickname (nickname always wins over either) |
+| `delivery_reactions` | `false` | When `true`, the bot reacts to each Discord message it sends onto MeshCore with its delivery status: 📡 once the radio accepts it, then ✅ if every chunk's delivery was confirmed (see [delivery summary](#meshcore-delivery-summary) and `meshcore.min_repeaters`/`success_repeaters`) or ⚠️ if not — after any `retry_on_no_repeat` retransmits. Reflects the MeshCore side only. Needs the bot's **Add Reactions** permission (a missing permission is logged, not fatal) |
 
 ### `limits:`
 
 | Field               | Default | Meaning                                                                                                    |
 |---------------------|---------|--------------------------------------------------------------------------------------------------------------|
 | `max_message_bytes` | `320`   | A Discord→mesh message composed as `"<Name>: <content>"` longer than this (UTF-8 bytes, pre-chunking) is rejected outright — not chunked — and the sender gets a reply explaining why, in Discord only |
+
+### `corescope:` (top-level)
+
+Optional. Connects hoplink to a [CoreScope](https://github.com/Kpa-clawbot/CoreScope)
+server's live packet feed. CoreScope collects MeshCore packets from "observer"
+nodes spread across a region; whenever one of them hears one of hoplink's own
+transmissions, that observation counts as evidence for the
+[delivery summary](#meshcore-delivery-summary): every repeater in the
+observed path counts as having relayed it, and the observer can satisfy
+`meshcore.success_observers`. That's evidence hoplink's own radio can never
+gather — copies relayed beyond its range, or a repeater's rebroadcast that
+collided at its own antenna (which a retry can't fix, since repeaters drop a
+byte-identical retransmit they've already seen).
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `url` | `""` | CoreScope's WebSocket endpoint, e.g. `wss://corescope.example/ws`. Empty disables it. hoplink reconnects with backoff if the feed drops; MeshCore relaying never depends on it |
+
+CoreScope observations arrive a few seconds late (observer → MQTT → CoreScope's
+poll interval), so with it on, raise `meshcore.retry_wait_ms` (e.g. `15000`) so
+the retry decision waits for them. An observation arriving after the summary
+that newly confirms delivery is logged as `delivered after all: confirmed late
+by CoreScope observer "…"`, and with `discord.delivery_reactions` on, the
+message's ⚠️ is swapped for ✅ once every unconfirmed chunk is confirmed.
 
 ### `coexistence:`
 

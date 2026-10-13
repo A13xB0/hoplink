@@ -27,6 +27,7 @@ type Config struct {
 	Discord     Discord     `yaml:"discord"`
 	Limits      Limits      `yaml:"limits"`
 	Coexistence Coexistence `yaml:"coexistence"`
+	CoreScope   CoreScope   `yaml:"corescope"`
 	// SenderFormat controls how a relayed message's origin surface
 	// (Discord/MeshCore/Meshtastic) is indicated in the sender name shown
 	// on each *other* destination: "none" (no tag, e.g. "Alice"), "short"
@@ -40,8 +41,31 @@ type Config struct {
 	// suppression alone fires on every message this bridge itself relays.
 	// Meant for diagnosing "a message reached other devices but never made
 	// it to Discord/the other mesh". Default false.
-	Debug   bool     `yaml:"debug"`
-	Bridges []Bridge `yaml:"bridges"`
+	Debug bool `yaml:"debug"`
+	// DedupWindowS, when > 0, merges a mesh message whose sender and text
+	// exactly match one already relayed on the same channel within this many
+	// seconds — e.g. someone hitting "resend" in their app, which produces a
+	// brand-new packet (new timestamp / packet ID) the per-packet dedup
+	// can't recognise. 0 (the default) disables it: two genuinely separate
+	// identical messages ("ok", "yes") inside the window would also be
+	// merged, so this is opt-in. Bounded 0-3600.
+	DedupWindowS int      `yaml:"dedup_window_s"`
+	Bridges      []Bridge `yaml:"bridges"`
+}
+
+// DedupWindow returns dedup_window_s as a Duration (0 = disabled).
+func (c *Config) DedupWindow() time.Duration {
+	return time.Duration(c.DedupWindowS) * time.Second
+}
+
+// CoreScope optionally connects hoplink to a CoreScope server's live packet
+// feed, so observations from its observer nodes count as evidence that our
+// MeshCore transmissions propagated (see meshcore.success_observers and the
+// delivery summary).
+type CoreScope struct {
+	// URL is the server's WebSocket endpoint, e.g. "wss://corescope.example/ws".
+	// Empty (the default) disables the integration.
+	URL string `yaml:"url"`
 }
 
 // validSenderFormat reports an error if s isn't a recognised sender_format
@@ -117,6 +141,28 @@ type Meshcore struct {
 	// default) means every repeater's relay counts. Global default;
 	// override per-bridge via bridges[].meshcore.ignore_repeat_from.
 	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
+	// SuccessRepeaters, when non-empty, narrows what counts as a confirmed
+	// delivery: at least one of these repeater hop hashes (hex) must appear
+	// in the path of a relayed copy we hear back — e.g. the hilltop
+	// repeater(s) that actually carry traffic out of the local area. Empty
+	// (the default) means any repeater not on ignore_repeat_from counts.
+	// Matched by prefix, so a 3-byte entry also matches the same repeater's
+	// 2-byte hash. Global default; override per-bridge via
+	// bridges[].meshcore.success_repeaters.
+	SuccessRepeaters []string `yaml:"success_repeaters"`
+	// MinRepeaters is how many distinct (non-ignored) repeaters must be seen
+	// relaying a message for it to count as delivered. Default 1, 1-16.
+	// Override per-bridge via bridges[].meshcore.min_repeaters.
+	MinRepeaters int `yaml:"min_repeaters"`
+	// SuccessObservers, when non-empty, also counts a message as delivered
+	// once any of these CoreScope observers (by observer name or ID,
+	// case-insensitive) reports hearing it — an alternative to the repeater
+	// rule above, not an extra requirement. Needs corescope.url. Override
+	// per-bridge via bridges[].meshcore.success_observers.
+	SuccessObservers []string `yaml:"success_observers"`
+	// MaxRetries is how many times retry_on_no_repeat may retransmit one
+	// message while its delivery is still unconfirmed. Default 1, 1-5.
+	MaxRetries int `yaml:"max_retries"`
 }
 
 // ChunkDelay returns ChunkDelayMs as a time.Duration.
@@ -237,6 +283,12 @@ func (m Meshtastic) ResolvedHopLimit() int {
 type Discord struct {
 	BotToken   string `yaml:"bot_token"`
 	NameSource string `yaml:"name_source"` // "display_name" (default) or "username"
+	// DeliveryReactions, when true, has the bot react to each Discord
+	// message it relays onto MeshCore with its delivery status: 📡 once the
+	// radio accepts it, then ✅ when every chunk's delivery is confirmed (see
+	// meshcore.min_repeaters / success_repeaters) or ⚠️ when it isn't. Needs
+	// the bot to have the Add Reactions permission. Default false.
+	DeliveryReactions bool `yaml:"delivery_reactions"`
 }
 
 // PreferDisplayName reports whether NameSource resolves to using the
@@ -314,6 +366,14 @@ type BridgeMeshCore struct {
 	// meshcore.ignore_repeat_from for this bridge only; empty means use the
 	// global default (see Bridge.ResolvedIgnoreRepeatFrom).
 	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
+	// SuccessRepeaters / MinRepeaters optionally override the top-level
+	// meshcore.success_repeaters / meshcore.min_repeaters for this bridge
+	// only; empty / 0 means use the global value.
+	SuccessRepeaters []string `yaml:"success_repeaters"`
+	MinRepeaters     int      `yaml:"min_repeaters"`
+	// SuccessObservers optionally overrides meshcore.success_observers for
+	// this bridge only; empty means use the global value.
+	SuccessObservers []string `yaml:"success_observers"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -446,6 +506,33 @@ func (b Bridge) ResolvedIgnoreRepeatFrom(globalList []string) []string {
 	return globalList
 }
 
+// ResolvedSuccessRepeaters returns this bridge's effective
+// meshcore.success_repeaters: its own override if set, else globalList.
+func (b Bridge) ResolvedSuccessRepeaters(globalList []string) []string {
+	if len(b.MeshCore.SuccessRepeaters) > 0 {
+		return b.MeshCore.SuccessRepeaters
+	}
+	return globalList
+}
+
+// ResolvedSuccessObservers returns this bridge's effective
+// meshcore.success_observers: its own override if set, else globalList.
+func (b Bridge) ResolvedSuccessObservers(globalList []string) []string {
+	if len(b.MeshCore.SuccessObservers) > 0 {
+		return b.MeshCore.SuccessObservers
+	}
+	return globalList
+}
+
+// ResolvedMinRepeaters returns this bridge's effective meshcore.min_repeaters:
+// its own override if set, else global.
+func (b Bridge) ResolvedMinRepeaters(global int) int {
+	if b.MeshCore.MinRepeaters > 0 {
+		return b.MeshCore.MinRepeaters
+	}
+	return global
+}
+
 // DiscordEnabled reports whether any enabled bridge has a Discord side
 // configured. When false, hoplink runs with no Discord gateway connection at
 // all — purely relaying between MeshCore and Meshtastic.
@@ -484,6 +571,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Meshcore.PathHashBytes == 0 {
 		c.Meshcore.PathHashBytes = 3
+	}
+	if c.Meshcore.MinRepeaters == 0 {
+		c.Meshcore.MinRepeaters = 1
+	}
+	if c.Meshcore.MaxRetries == 0 {
+		c.Meshcore.MaxRetries = 1
 	}
 	if c.Meshcore.RetryWaitMs == 0 {
 		c.Meshcore.RetryWaitMs = 8000
@@ -562,6 +655,22 @@ func validWebhookURL(s string) error {
 func (c *Config) Validate() error {
 	var errs []string
 
+	if u := strings.TrimSpace(c.CoreScope.URL); u != "" {
+		if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "ws" && parsed.Scheme != "wss") || parsed.Host == "" {
+			errs = append(errs, fmt.Sprintf("corescope.url must be a ws:// or wss:// URL (CoreScope's /ws endpoint), got %q", u))
+		}
+	}
+	anySuccessObservers := len(c.Meshcore.SuccessObservers) > 0
+	for _, b := range c.Bridges {
+		anySuccessObservers = anySuccessObservers || len(b.MeshCore.SuccessObservers) > 0
+	}
+	if anySuccessObservers && strings.TrimSpace(c.CoreScope.URL) == "" {
+		errs = append(errs, "meshcore.success_observers needs corescope.url to be set (observations come from CoreScope's live feed)")
+	}
+	if c.DedupWindowS < 0 || c.DedupWindowS > 3600 {
+		errs = append(errs, fmt.Sprintf("dedup_window_s must be between 0 and 3600 (seconds), got %d", c.DedupWindowS))
+	}
+
 	anyMeshcore, anyMeshtastic, anyDiscord := false, false, false
 	for _, b := range c.Bridges {
 		if !b.IsEnabled() {
@@ -598,6 +707,17 @@ func (c *Config) Validate() error {
 			if err := validHexRepeaterHash(h); err != nil {
 				errs = append(errs, fmt.Sprintf("meshcore.ignore_repeat_from: %s", err))
 			}
+		}
+		for _, h := range c.Meshcore.SuccessRepeaters {
+			if err := validHexRepeaterHash(h); err != nil {
+				errs = append(errs, fmt.Sprintf("meshcore.success_repeaters: %s", err))
+			}
+		}
+		if c.Meshcore.MinRepeaters < 1 || c.Meshcore.MinRepeaters > 16 {
+			errs = append(errs, fmt.Sprintf("meshcore.min_repeaters must be between 1 and 16, got %d", c.Meshcore.MinRepeaters))
+		}
+		if c.Meshcore.MaxRetries < 1 || c.Meshcore.MaxRetries > 5 {
+			errs = append(errs, fmt.Sprintf("meshcore.max_retries must be between 1 and 5, got %d", c.Meshcore.MaxRetries))
 		}
 	}
 	if anyMeshtastic {
@@ -682,6 +802,14 @@ func (c *Config) Validate() error {
 				if err := validHexRepeaterHash(h); err != nil {
 					errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.ignore_repeat_from: %s", label, err))
 				}
+			}
+			for _, h := range b.MeshCore.SuccessRepeaters {
+				if err := validHexRepeaterHash(h); err != nil {
+					errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.success_repeaters: %s", label, err))
+				}
+			}
+			if b.MeshCore.MinRepeaters < 0 || b.MeshCore.MinRepeaters > 16 {
+				errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.min_repeaters must be between 1 and 16 (or unset), got %d", label, b.MeshCore.MinRepeaters))
 			}
 		}
 
