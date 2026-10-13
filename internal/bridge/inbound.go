@@ -72,9 +72,9 @@ func (b *Bridge) handleMeshcoreChannelMessage(msg meshcore.ChannelMessage) {
 		return
 	}
 	// The sync path carries no path/hop/scope metadata (see
-	// registerMeshcoreChannels' doc comment) — nil here means neither
-	// per-mapping rx_scopes filtering nor repeater-path logging apply to
-	// this delivery.
+	// registerMeshcoreChannels' doc comment) — nil here means no
+	// repeater-path logging, and bridges with rx_scopes hold this delivery
+	// until the raw-log copy proves its scope (see holdForScope).
 	b.deliverMeshcoreChannelText("sync", channelHash, msg.TimestampUnix, msg.Text, nil)
 }
 
@@ -99,7 +99,9 @@ func (b *Bridge) handleMeshcoreChannelMessage(msg meshcore.ChannelMessage) {
 // checked independently in the fan-out loop below — deliberately not
 // resolved once up front, since two sibling bridges sharing this channel
 // may configure different rx_scopes, and this is the only point where every
-// mapping sharing channelHash is visited).
+// mapping sharing channelHash is visited). With pkt nil, a bridge that sets
+// rx_scopes can't check it yet, so its delivery is held instead (see
+// holdForScope).
 func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, timestampUnix uint32, text string, pkt *meshcore.Packet) {
 	echoKey := meshcoreEchoKey(channelHash, text)
 	dedupKey := meshcoreDedupKey(channelHash, timestampUnix, text)
@@ -126,6 +128,11 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 		return
 	}
 	if b.isDuplicateInbound(dedupKey) {
+		if pkt != nil {
+			// The raw-log copy of a message the sync path got to first: it
+			// carries the scope the held bridges were waiting for.
+			b.releaseScopeHold(dedupKey, pkt, channelHash)
+		}
 		b.debugMeshcore("RX suppressing %q on channel_hash %#x as a duplicate delivery (already relayed or sent this exact packet within the last %s)", text, channelHash, inboundDedupTTL)
 		return
 	}
@@ -140,39 +147,122 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 
 	session := b.meshtasticSessionRef()
 	relayedIdx := map[uint32]bool{}
+	var held []*mapping
 	for _, m := range b.byName {
 		if !m.meshcoreEnabled || m.channelHash != channelHash {
 			continue
 		}
-		if pkt != nil && len(m.rxScopes) > 0 {
-			matches, err := pkt.MatchesAnyScope(m.rxScopes)
-			if err != nil {
-				b.debugMeshcore("RX bridge %q: error checking rx_scopes: %v", m.cfg.Name, err)
+		if len(m.rxScopes) > 0 {
+			if pkt == nil {
+				// The sync path carries no scope, so it can't satisfy
+				// rx_scopes on its own: wait for the raw-log copy.
+				held = append(held, m)
 				continue
 			}
-			if !matches {
-				b.debugMeshcore("RX bridge %q: dropping message on channel_hash %#x — its scope doesn't match configured rx_scopes %v", m.cfg.Name, channelHash, m.rxScopes)
+			if !b.scopeAllowed(m, pkt, channelHash) {
 				continue
 			}
 		}
-		tag := formatSenderName(sender, originMeshcore, m.senderFormat)
-		if m.discordEnabled {
-			b.postToWebhook(m, sender, tag, body)
+		b.relayMeshcoreText(m, sender, body, session, relayedIdx)
+	}
+	if len(held) > 0 {
+		b.holdForScope(dedupKey, held, channelHash, sender, body, relayedIdx)
+	}
+}
+
+// relayMeshcoreText delivers one inbound MeshCore message to m's Discord
+// and Meshtastic sides. relayedIdx records the Meshtastic channel indexes
+// already relayed to for this message, so siblings sharing one physical
+// channel send it once.
+func (b *Bridge) relayMeshcoreText(m *mapping, sender, body string, session *meshtastic.Session, relayedIdx map[uint32]bool) {
+	tag := formatSenderName(sender, originMeshcore, m.senderFormat)
+	if m.discordEnabled {
+		b.postToWebhook(m, sender, tag, body)
+	}
+	// A read-only mapping must not claim the relay slot for its channel
+	// index: it would never transmit, and a writable sibling sharing the
+	// same physical channel would then be skipped — losing the relay.
+	if m.meshtasticEnabled && !m.cfg.Meshtastic.ReadOnly {
+		skip := false
+		if session != nil {
+			if idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName); ok {
+				skip = relayedIdx[idx]
+				relayedIdx[idx] = true
+			}
 		}
-		// A read-only mapping must not claim the relay slot for its channel
-		// index: it would never transmit, and a writable sibling sharing the
-		// same physical channel would then be skipped — losing the relay.
-		if m.meshtasticEnabled && !m.cfg.Meshtastic.ReadOnly {
-			skip := false
-			if session != nil {
-				if idx, ok := session.ResolveChannelIndex(m.cfg.Meshtastic.ChannelName); ok {
-					skip = relayedIdx[idx]
-					relayedIdx[idx] = true
-				}
-			}
-			if !skip {
-				b.enqueueRelay(m.cfg.Name, func() { b.sendMeshtastic(m, tag, body) })
-			}
+		if !skip {
+			b.enqueueRelay(m.cfg.Name, func() { b.sendMeshtastic(m, tag, body) })
+		}
+	}
+}
+
+// scopeAllowed reports whether pkt was flooded in one of m's rx_scopes.
+func (b *Bridge) scopeAllowed(m *mapping, pkt *meshcore.Packet, channelHash byte) bool {
+	matches, err := pkt.MatchesAnyScope(m.rxScopes)
+	if err != nil {
+		b.debugMeshcore("RX bridge %q: error checking rx_scopes: %v", m.cfg.Name, err)
+		return false
+	}
+	if !matches {
+		b.debugMeshcore("RX bridge %q: dropping message on channel_hash %#x — its scope doesn't match configured rx_scopes %v", m.cfg.Name, channelHash, m.rxScopes)
+	}
+	return matches
+}
+
+// scopeHoldWait is how long a device-sync delivery is held for a bridge with
+// rx_scopes, waiting for the raw-log copy of the same packet to prove its
+// scope. The raw log normally arrives first (the sync path needs an extra
+// round trip to the radio), so this only matters when it lags or is lost.
+var scopeHoldWait = 3 * time.Second
+
+// scopeHold is a device-sync delivery waiting on its raw-log copy.
+type scopeHold struct {
+	mappings     []*mapping
+	sender, body string
+	relayedIdx   map[uint32]bool
+}
+
+// holdForScope parks a device-sync delivery for the rx_scopes bridges in
+// held. If the raw-log copy arrives within scopeHoldWait, releaseScopeHold
+// relays it to those whose scope it matches; otherwise its scope can't be
+// proven and it's dropped. Without this, a message in a scope rx_scopes
+// rejects would still be relayed whenever the sync path delivered it first
+// (the raw-log copy is then a duplicate and never reaches the scope check).
+func (b *Bridge) holdForScope(dedupKey string, held []*mapping, channelHash byte, sender, body string, relayedIdx map[uint32]bool) {
+	b.mu.Lock()
+	if b.scopeHolds == nil {
+		b.scopeHolds = make(map[string]*scopeHold)
+	}
+	b.scopeHolds[dedupKey] = &scopeHold{mappings: held, sender: sender, body: body, relayedIdx: relayedIdx}
+	b.mu.Unlock()
+	b.afterFunc(scopeHoldWait, func() {
+		b.mu.Lock()
+		h := b.scopeHolds[dedupKey]
+		delete(b.scopeHolds, dedupKey)
+		b.mu.Unlock()
+		if h == nil {
+			return // released by its raw-log copy
+		}
+		for _, m := range h.mappings {
+			logfMeshcore("RX bridge %q: not relaying a message from %q on channel_hash %#x: it arrived only via device sync, which carries no scope, so rx_scopes can't be checked", m.cfg.Name, h.sender, channelHash)
+		}
+	})
+}
+
+// releaseScopeHold settles a held device-sync delivery now that pkt, its
+// raw-log copy, shows which scope it was flooded in.
+func (b *Bridge) releaseScopeHold(dedupKey string, pkt *meshcore.Packet, channelHash byte) {
+	b.mu.Lock()
+	h := b.scopeHolds[dedupKey]
+	delete(b.scopeHolds, dedupKey)
+	b.mu.Unlock()
+	if h == nil {
+		return
+	}
+	session := b.meshtasticSessionRef()
+	for _, m := range h.mappings {
+		if b.scopeAllowed(m, pkt, channelHash) {
+			b.relayMeshcoreText(m, h.sender, h.body, session, h.relayedIdx)
 		}
 	}
 }

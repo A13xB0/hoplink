@@ -84,9 +84,10 @@ meshcore:                # required only if some bridge has meshcore.enabled: tr
                       # it's dropped; leave empty (the default) to accept
                       # every scope, scoped or not. This is the DEFAULT for
                       # every bridge; override per-bridge with
-                      # meshcore.rx_scopes below. Only filters the raw-log
-                      # inbound path (see README) — has no effect on the
-                      # device-side sync path, which carries no scope info.
+                      # meshcore.rx_scopes below. The scope is only visible
+                      # on the raw-log inbound path (see README), so a copy
+                      # that arrives by device sync is held up to 3s for its
+                      # raw-log copy, and dropped if none arrives.
   retry_on_no_repeat: false  # when true, retransmit an outgoing meshcore
                       # message (up to max_retries times) if its delivery
                       # isn't confirmed — see success_repeaters/min_repeaters
