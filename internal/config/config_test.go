@@ -1793,6 +1793,64 @@ func TestLoad_RejectsOutOfRangeBusyKnobs(t *testing.T) {
 	}
 }
 
+func TestLoad_DeliveryRuleDefaults(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshcore.MinRepeaters != 1 || cfg.Meshcore.MaxRetries != 1 || len(cfg.Meshcore.SuccessRepeaters) != 0 {
+		t.Errorf("defaults = min_repeaters %d, max_retries %d, success_repeaters %v; want 1, 1, []",
+			cfg.Meshcore.MinRepeaters, cfg.Meshcore.MaxRetries, cfg.Meshcore.SuccessRepeaters)
+	}
+}
+
+func TestLoad_DeliveryRuleIsConfigurable(t *testing.T) {
+	cfg, err := Load(writeTemp(t, configWithMeshcore(`  success_repeaters: ["a1b2c3"]
+  min_repeaters: 2
+  max_retries: 3`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshcore.MinRepeaters != 2 || cfg.Meshcore.MaxRetries != 3 || len(cfg.Meshcore.SuccessRepeaters) != 1 {
+		t.Errorf("got min_repeaters %d, max_retries %d, success_repeaters %v", cfg.Meshcore.MinRepeaters, cfg.Meshcore.MaxRetries, cfg.Meshcore.SuccessRepeaters)
+	}
+}
+
+func TestLoad_DeliveryRuleValidation(t *testing.T) {
+	for field, want := range map[string]string{
+		`  success_repeaters: ["zz"]`: "meshcore.success_repeaters",
+		`  min_repeaters: 17`:         "meshcore.min_repeaters",
+		`  min_repeaters: -1`:         "meshcore.min_repeaters",
+		`  max_retries: 6`:            "meshcore.max_retries",
+		`  max_retries: -2`:           "meshcore.max_retries",
+	} {
+		_, err := Load(writeTemp(t, configWithMeshcore(field)))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want error mentioning %q, got %v", strings.TrimSpace(field), want, err)
+		}
+	}
+}
+
+func TestLoad_DeliveryRulePerBridgeOverride(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validMinimal+`      success_repeaters: ["d4e5f6"]
+      min_repeaters: 3
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := cfg.Bridges[0]
+	if got := b.ResolvedSuccessRepeaters(cfg.Meshcore.SuccessRepeaters); len(got) != 1 || got[0] != "d4e5f6" {
+		t.Errorf("ResolvedSuccessRepeaters = %v", got)
+	}
+	if got := b.ResolvedMinRepeaters(cfg.Meshcore.MinRepeaters); got != 3 {
+		t.Errorf("ResolvedMinRepeaters = %d, want 3", got)
+	}
+	var plain Bridge
+	if got := plain.ResolvedMinRepeaters(1); got != 1 {
+		t.Errorf("no override: ResolvedMinRepeaters = %d, want the global 1", got)
+	}
+}
+
 func TestLoad_DedupWindowDefaultsToDisabled(t *testing.T) {
 	cfg, err := Load(writeTemp(t, validMinimal))
 	if err != nil {

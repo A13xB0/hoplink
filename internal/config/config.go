@@ -130,6 +130,22 @@ type Meshcore struct {
 	// default) means every repeater's relay counts. Global default;
 	// override per-bridge via bridges[].meshcore.ignore_repeat_from.
 	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
+	// SuccessRepeaters, when non-empty, narrows what counts as a confirmed
+	// delivery: at least one of these repeater hop hashes (hex) must appear
+	// in the path of a relayed copy we hear back — e.g. the hilltop
+	// repeater(s) that actually carry traffic out of the local area. Empty
+	// (the default) means any repeater not on ignore_repeat_from counts.
+	// Matched by prefix, so a 3-byte entry also matches the same repeater's
+	// 2-byte hash. Global default; override per-bridge via
+	// bridges[].meshcore.success_repeaters.
+	SuccessRepeaters []string `yaml:"success_repeaters"`
+	// MinRepeaters is how many distinct (non-ignored) repeaters must be seen
+	// relaying a message for it to count as delivered. Default 1, 1-16.
+	// Override per-bridge via bridges[].meshcore.min_repeaters.
+	MinRepeaters int `yaml:"min_repeaters"`
+	// MaxRetries is how many times retry_on_no_repeat may retransmit one
+	// message while its delivery is still unconfirmed. Default 1, 1-5.
+	MaxRetries int `yaml:"max_retries"`
 }
 
 // ChunkDelay returns ChunkDelayMs as a time.Duration.
@@ -327,6 +343,11 @@ type BridgeMeshCore struct {
 	// meshcore.ignore_repeat_from for this bridge only; empty means use the
 	// global default (see Bridge.ResolvedIgnoreRepeatFrom).
 	IgnoreRepeatFrom []string `yaml:"ignore_repeat_from"`
+	// SuccessRepeaters / MinRepeaters optionally override the top-level
+	// meshcore.success_repeaters / meshcore.min_repeaters for this bridge
+	// only; empty / 0 means use the global value.
+	SuccessRepeaters []string `yaml:"success_repeaters"`
+	MinRepeaters     int      `yaml:"min_repeaters"`
 }
 
 // BridgeMeshtastic is a bridge's Meshtastic-side configuration: which
@@ -459,6 +480,24 @@ func (b Bridge) ResolvedIgnoreRepeatFrom(globalList []string) []string {
 	return globalList
 }
 
+// ResolvedSuccessRepeaters returns this bridge's effective
+// meshcore.success_repeaters: its own override if set, else globalList.
+func (b Bridge) ResolvedSuccessRepeaters(globalList []string) []string {
+	if len(b.MeshCore.SuccessRepeaters) > 0 {
+		return b.MeshCore.SuccessRepeaters
+	}
+	return globalList
+}
+
+// ResolvedMinRepeaters returns this bridge's effective meshcore.min_repeaters:
+// its own override if set, else global.
+func (b Bridge) ResolvedMinRepeaters(global int) int {
+	if b.MeshCore.MinRepeaters > 0 {
+		return b.MeshCore.MinRepeaters
+	}
+	return global
+}
+
 // DiscordEnabled reports whether any enabled bridge has a Discord side
 // configured. When false, hoplink runs with no Discord gateway connection at
 // all — purely relaying between MeshCore and Meshtastic.
@@ -497,6 +536,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Meshcore.PathHashBytes == 0 {
 		c.Meshcore.PathHashBytes = 3
+	}
+	if c.Meshcore.MinRepeaters == 0 {
+		c.Meshcore.MinRepeaters = 1
+	}
+	if c.Meshcore.MaxRetries == 0 {
+		c.Meshcore.MaxRetries = 1
 	}
 	if c.Meshcore.RetryWaitMs == 0 {
 		c.Meshcore.RetryWaitMs = 8000
@@ -616,6 +661,17 @@ func (c *Config) Validate() error {
 				errs = append(errs, fmt.Sprintf("meshcore.ignore_repeat_from: %s", err))
 			}
 		}
+		for _, h := range c.Meshcore.SuccessRepeaters {
+			if err := validHexRepeaterHash(h); err != nil {
+				errs = append(errs, fmt.Sprintf("meshcore.success_repeaters: %s", err))
+			}
+		}
+		if c.Meshcore.MinRepeaters < 1 || c.Meshcore.MinRepeaters > 16 {
+			errs = append(errs, fmt.Sprintf("meshcore.min_repeaters must be between 1 and 16, got %d", c.Meshcore.MinRepeaters))
+		}
+		if c.Meshcore.MaxRetries < 1 || c.Meshcore.MaxRetries > 5 {
+			errs = append(errs, fmt.Sprintf("meshcore.max_retries must be between 1 and 5, got %d", c.Meshcore.MaxRetries))
+		}
 	}
 	if anyMeshtastic {
 		if !c.Meshtastic.Configured() {
@@ -699,6 +755,14 @@ func (c *Config) Validate() error {
 				if err := validHexRepeaterHash(h); err != nil {
 					errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.ignore_repeat_from: %s", label, err))
 				}
+			}
+			for _, h := range b.MeshCore.SuccessRepeaters {
+				if err := validHexRepeaterHash(h); err != nil {
+					errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.success_repeaters: %s", label, err))
+				}
+			}
+			if b.MeshCore.MinRepeaters < 0 || b.MeshCore.MinRepeaters > 16 {
+				errs = append(errs, fmt.Sprintf("bridges[%s].meshcore.min_repeaters must be between 1 and 16 (or unset), got %d", label, b.MeshCore.MinRepeaters))
 			}
 		}
 

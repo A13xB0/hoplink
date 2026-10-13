@@ -194,12 +194,20 @@ in that copy's path, not just the nearest one. Once the send has settled
 fired), one summary line is logged per chunk:
 
 ```
-[meshcore] TX bridge "longfast": chunk 1/1 (packet 3f9c0a6e1b2d7c48) repeated: 3 copies heard via 4 repeaters [a1b2c3, d4e5f6, 0919aa, 77e0c1] after 1 attempt
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 3f9c0a6e1b2d7c48) delivered: 3 copies heard via 4 repeaters [a1b2c3, d4e5f6, 0919aa, 77e0c1] after 1 attempt
+[meshcore] TX bridge "longfast": chunk 1/1 (packet 51e0c2aa9b7d3f10) NOT confirmed: 1 copy heard via 1 repeater [a1b2c3], but the rule needs 1 repeater including one of [d4e5f6], after 2 attempts
 [meshcore] TX bridge "longfast": chunk 1/1 (packet 9a01b2c3d4e5f607) NOT confirmed: no relayed copy heard after 2 attempts
 ```
 
-Repeaters on `ignore_repeat_from` are listed separately and don't count.
-Set `debug: true` to also log each individual copy and its path.
+What counts as **delivered** is configurable: by default, any one repeater
+not on `ignore_repeat_from`; `min_repeaters` raises the count, and
+`success_repeaters` requires a specific repeater (anywhere in a copy's path) —
+useful for "it only really went out if the hilltop repeater carried it".
+With `retry_on_no_repeat` on, an unconfirmed message is retransmitted up to
+`max_retries` times. Note a retransmit is byte-identical, so repeaters that
+already relayed the original drop it as a duplicate — a retry only reaches
+repeaters that missed the first copy. Set `debug: true` to also log each
+individual copy and its path.
 
 ## Requirements
 
@@ -376,13 +384,16 @@ Required only if some bridge has `meshcore.enabled: true`.
 | `path_hash_bytes` | `3`        | `2` \| `3` — hop-hash width on our outgoing packets; 1-byte hashes are rejected outright |
 | `flood_scope`     | `""`       | Optional named flood scope/region; set this if your repeaters run in "scope-only" mode (they silently drop unscoped floods). This is the default for every bridge — override it per-bridge with `meshcore.flood_scope` under that bridge |
 | `rx_scopes`       | `[]`       | Optional allowlist of scope names to *accept* on receive — a packet must be flooded within one of these or it's dropped. Empty (default) accepts every scope. Only filters the raw-log inbound path (see "MeshCore: two independent receive paths" above); no effect on the device-side sync path. Default for every bridge — override per-bridge with `meshcore.rx_scopes` |
-| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message once if no self-echo of it (the mesh repeating it back to us) is heard within `retry_wait_ms` of sending — a signal no repeater picked it up. Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on. When a repeat *is* heard, a log line names which repeater(s) relayed it (their hop hash, nearest-to-us last); when none is heard, a log line says so just before the single retransmit |
+| `retry_on_no_repeat` | `false` | When `true`, retransmit an outgoing message (up to `max_retries` times) if its delivery isn't confirmed within `retry_wait_ms` of sending — by default, if no repeater was heard relaying it back; see `success_repeaters`/`min_repeaters` to tighten that, and [delivery summary](#meshcore-delivery-summary). Disabled by default: a missing repeat is also normal on a small/direct-route mesh, and this doubles airtime for every message it triggers on. When a repeat *is* heard, a log line names which repeater(s) relayed it (their hop hash, nearest-to-us last); when delivery is unconfirmed, a log line says so just before each retransmit |
 | `chunk_delay_ms` | `0` | Extra pause (milliseconds) held between each piece of a message split across multiple MeshCore chunks (see `limits.max_message_bytes`). `0` sends every chunk back-to-back; raise it if a receiving node/repeater tends to miss or garble chunks sent in quick succession |
 | `retry_wait_ms` | `8000` | How long `retry_on_no_repeat` waits after sending before deciding no repeat was heard and retransmitting once. Must be between `1000` and `120000` (1s-2min) — bounded so it can't fire before a real repeat could plausibly arrive, or be left waiting so long the bridge looks stuck when it's really just still listening |
 | `busy_wait` | `true` | Listen before talking: outgoing transmissions (and `retry_on_no_repeat` retransmits) wait for the channel to go quiet — sensed by computing the LoRa airtime of every packet in the raw RF log — before hitting the air, and keep `min_tx_spacing_ms` between hoplink's own transmissions. Prevents a lively Discord channel from machine-gunning the mesh; retry timers are also jittered ±20% so two nodes that collided once don't re-collide every round. Set `false` to transmit immediately as before |
 | `busy_max_defer_ms` | `8000` | Cap on how long `busy_wait` may hold one transmission waiting for quiet air (a message is never held hostage; the radio still does its own carrier sensing underneath). `0`–`60000` |
 | `min_tx_spacing_ms` | `3000` | Minimum gap between hoplink's own MeshCore transmissions while `busy_wait` is on. `0`–`30000` |
 | `ignore_repeat_from` | `[]` | Optional list of repeater hop hashes (hex, e.g. `["a1b2c3"]` — find the hex to use in the "repeat heard ... relayed via" log line) whose relay of one of our own messages does *not* count as "the mesh repeated it": if the only repeat heard came from one of these, hoplink still retransmits. Useful for a repeater that reliably rebroadcasts within earshot of our own radio but is known not to actually extend the mesh further. Default for every bridge — override per-bridge with `meshcore.ignore_repeat_from` |
+| `success_repeaters` | `[]` | Optional list of repeater hop hashes (hex). When set, a message only counts as **delivered** once one of these appears in the path of a relayed copy hoplink hears — e.g. the repeater that carries traffic out of your area — rather than any repeater at all. Matched by prefix, so a 3-byte hash also matches the same repeater's 2-byte hash. Override per-bridge with `meshcore.success_repeaters` |
+| `min_repeaters` | `1` | How many distinct (non-ignored) repeaters must be heard relaying a message for it to count as delivered. `1`–`16`. Override per-bridge with `meshcore.min_repeaters` |
+| `max_retries` | `1` | How many times `retry_on_no_repeat` may retransmit one message while its delivery is unconfirmed. `1`–`5` |
 
 ### `meshtastic:` (top-level)
 
