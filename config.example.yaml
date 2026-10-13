@@ -201,6 +201,12 @@ discord:                # entirely optional — omit this whole block if no
                                # to embed as the mesh sender when a message has
                                # no per-server nickname set (server nickname
                                # always wins over either option when present).
+  delivery_reactions: false   # when true, the bot reacts to each Discord message
+                               # it sends onto MeshCore with its delivery status:
+                               # 📡 radio accepted it, then ✅ delivered (every
+                               # chunk confirmed — see meshcore.min_repeaters /
+                               # success_repeaters) or ⚠️ not confirmed. Needs
+                               # the bot's Add Reactions permission.
 
 limits:
   max_message_bytes: 320   # a Discord -> mesh message composed as "<Name>: <content>"

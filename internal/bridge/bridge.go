@@ -94,8 +94,9 @@ type notifier interface {
 // one backend reconnecting never disturbs the other.
 type Bridge struct {
 	notify                    notifier
-	hashSize                  int    // path hash bytes/hop for our outgoing MeshCore packets (1-3)
-	meshtasticHopLimit        uint32 // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
+	react                     reactor // non-nil iff discord.delivery_reactions (see receipt.go)
+	hashSize                  int     // path hash bytes/hop for our outgoing MeshCore packets (1-3)
+	meshtasticHopLimit        uint32  // meshtastic.hop_limit — how many times other nodes may rebroadcast our outgoing packets (0-7)
 	debug                     bool
 	contentDedupWindow        time.Duration // dedup_window_s — merge identical sender+text re-sends; 0 = off (see isRepeatedContent)
 	meshcoreRetryOnNoRepeat   bool          // meshcore.retry_on_no_repeat — see maxRepeatRetries
@@ -287,6 +288,9 @@ func New(cfg *config.Config, bot *discord.Bot) (*Bridge, error) {
 
 	if bot != nil {
 		b.notify = bot
+		if cfg.Discord.DeliveryReactions {
+			b.react = bot
+		}
 		bot.OnMessage(b.handleDiscordMessage)
 	}
 	return b, nil

@@ -37,12 +37,17 @@ type delivery struct {
 	ignore     [][]byte // the sending mapping's meshcore.ignore_repeat_from
 	success    []string // the sending mapping's meshcore.success_repeaters (lowercase hex)
 	minRepeat  int      // the sending mapping's meshcore.min_repeaters
-	reported   bool     // summary already logged; later copies only count
+	// receipts are the originating Discord messages' delivery reactions —
+	// usually zero or one, but two identical sends in the same second (same
+	// text, same timestamp) are the same packet and share this record, so
+	// each of their receipts must be settled. Cleared once settled.
+	receipts []*discordReceipt
+	reported bool // summary already logged; later copies only count
 }
 
 // trackDelivery records an attempt to send the packet hashed h — creating
 // the record on the first attempt.
-func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int) {
+func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chunkTotal int, rc *discordReceipt) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.deliveries == nil {
@@ -63,6 +68,18 @@ func (b *Bridge) trackDelivery(h meshcore.PacketHash, m *mapping, chunkIdx, chun
 	}
 	d.attempts++
 	d.reported = false
+	if rc != nil && !containsReceipt(d.receipts, rc) {
+		d.receipts = append(d.receipts, rc)
+	}
+}
+
+func containsReceipt(list []*discordReceipt, rc *discordReceipt) bool {
+	for _, r := range list {
+		if r == rc {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetDelivery drops h's record — used when its very first send failed,
@@ -195,8 +212,13 @@ func (b *Bridge) reportDelivery(h meshcore.PacketHash) {
 	}
 	d.reported = true
 	line := d.summary(h)
+	receipts, confirmed := d.receipts, d.confirmed()
+	d.receipts = nil
 	b.mu.Unlock()
 	logfMeshcore("%s", line)
+	for _, rc := range receipts {
+		rc.settle(confirmed)
+	}
 }
 
 // summary renders d as a log line. Caller holds b.mu.
