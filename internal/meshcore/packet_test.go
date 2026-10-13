@@ -2,6 +2,7 @@ package meshcore
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"testing"
 )
 
@@ -207,5 +208,69 @@ func TestPacket_MatchesAnyScope_RejectsWrongScope(t *testing.T) {
 	}
 	if got {
 		t.Error("expected no match against an unconfigured scope")
+	}
+}
+
+func TestPacket_Hash_MatchesFirmwareDefinition(t *testing.T) {
+	payload := []byte{0x5a, 0x01, 0x02, 0xaa, 0xbb, 0xcc}
+	p := Packet{Route: RouteFlood, PayloadType: PayloadTypeGrpTxt, HashSize: 3, Payload: payload}
+
+	want := sha256.Sum256(append([]byte{byte(PayloadTypeGrpTxt)}, payload...))
+	got := p.Hash()
+	if !bytes.Equal(got[:], want[:8]) {
+		t.Fatalf("Hash() = %x, want %x", got, want[:8])
+	}
+	if s := got.String(); len(s) != 16 {
+		t.Errorf("String() = %q, want 16 hex chars", s)
+	}
+}
+
+func TestPacket_Hash_IgnoresRouteTransportAndPath(t *testing.T) {
+	payload := []byte{0x5a, 0x01, 0x02, 0xaa}
+	orig := Packet{Route: RouteFlood, PayloadType: PayloadTypeGrpTxt, HashSize: 3, Payload: payload}
+	relayed := Packet{
+		Route: RouteTransportFlood, PayloadType: PayloadTypeGrpTxt, HashSize: 3,
+		TransportCodes: []byte{1, 2, 3, 4}, Path: []byte{0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6},
+		Payload: payload,
+	}
+	if orig.Hash() != relayed.Hash() {
+		t.Error("a relayed copy (different route/transport/path) must hash the same as the original")
+	}
+	other := orig
+	other.Payload = []byte{0x5a, 0x01, 0x02, 0xab}
+	if orig.Hash() == other.Hash() {
+		t.Error("different payloads must hash differently")
+	}
+}
+
+func TestPacket_Hash_SurvivesWireRoundTrip(t *testing.T) {
+	pkt, err := BuildChannelPacket(HashtagChannelSecret("#test"), 3, FloodScopeKey("region"), "Alice: hi", 1_700_000_000)
+	if err != nil {
+		t.Fatalf("BuildChannelPacket: %v", err)
+	}
+	raw, err := BuildPacket(pkt)
+	if err != nil {
+		t.Fatalf("BuildPacket: %v", err)
+	}
+	parsed, err := ParsePacket(raw)
+	if err != nil {
+		t.Fatalf("ParsePacket: %v", err)
+	}
+	if parsed.Hash() != pkt.Hash() {
+		t.Error("hash changed across serialise/parse")
+	}
+}
+
+func TestPacket_Hops(t *testing.T) {
+	p := Packet{HashSize: 2, Path: []byte{0xa1, 0xa2, 0xb1, 0xb2}}
+	hops := p.Hops()
+	if len(hops) != 2 || !bytes.Equal(hops[0], []byte{0xa1, 0xa2}) || !bytes.Equal(hops[1], []byte{0xb1, 0xb2}) {
+		t.Errorf("Hops() = %x", hops)
+	}
+	if (Packet{HashSize: 3, Path: []byte{1, 2}}).Hops() != nil {
+		t.Error("malformed path should yield nil")
+	}
+	if (Packet{HashSize: 3}).Hops() != nil {
+		t.Error("empty path should yield nil")
 	}
 }

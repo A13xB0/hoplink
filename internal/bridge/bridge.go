@@ -127,6 +127,10 @@ type Bridge struct {
 	mu             sync.Mutex
 	recentInbound  map[string]time.Time
 	recentOutbound map[string]pendingEcho
+	// deliveries tracks our own MeshCore sends by packet hash, recording
+	// every relayed copy heard (see delivery.go). Lazily created; guarded
+	// by mu; swept after inboundDedupTTL.
+	deliveries map[meshcore.PacketHash]*delivery
 	// recentContent maps a channel+sender+text key to when it was first
 	// relayed, for dedup_window_s (see isRepeatedContent). Lazily created;
 	// guarded by mu.
@@ -571,6 +575,11 @@ func (b *Bridge) sweep() {
 	for k, pending := range b.recentOutbound {
 		if now.Sub(pending.sentAt) > ttl {
 			delete(b.recentOutbound, k)
+		}
+	}
+	for h, d := range b.deliveries {
+		if now.Sub(d.firstSent) > inboundDedupTTL {
+			delete(b.deliveries, h)
 		}
 	}
 	for k, first := range b.recentContent {
