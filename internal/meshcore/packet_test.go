@@ -274,3 +274,24 @@ func TestPacket_Hops(t *testing.T) {
 		t.Error("empty path should yield nil")
 	}
 }
+
+func TestPacket_MatchScope_NamesTheMatchingScope(t *testing.T) {
+	payload := []byte{1, 2, 3}
+	code, err := CalcTransportCode(FloodScopeKey("sco"), PayloadTypeGrpTxt, payload)
+	if err != nil {
+		t.Fatalf("CalcTransportCode: %v", err)
+	}
+	p := Packet{
+		Route:          RouteTransportFlood,
+		PayloadType:    PayloadTypeGrpTxt,
+		Payload:        payload,
+		TransportCodes: EncodeTransportCodes(code, 0),
+	}
+	name, ok, err := p.MatchScope([]string{"fif", "sco", "sco-admin"})
+	if err != nil || !ok || name != "sco" {
+		t.Errorf("MatchScope = %q, %v, %v; want \"sco\", true, nil", name, ok, err)
+	}
+	if _, ok, _ := p.MatchScope([]string{"fif", "sco-admin"}); ok {
+		t.Error("MatchScope matched a scope the packet wasn't flooded in")
+	}
+}

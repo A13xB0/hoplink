@@ -160,6 +160,7 @@ func (b *Bridge) deliverMeshcoreChannelText(source string, channelHash byte, tim
 				continue
 			}
 			if !b.scopeAllowed(m, pkt, channelHash) {
+				b.maybeScopeNotice(m, pkt, sender)
 				continue
 			}
 		}
@@ -263,6 +264,8 @@ func (b *Bridge) releaseScopeHold(dedupKey string, pkt *meshcore.Packet, channel
 	for _, m := range h.mappings {
 		if b.scopeAllowed(m, pkt, channelHash) {
 			b.relayMeshcoreText(m, h.sender, h.body, session, h.relayedIdx)
+		} else {
+			b.maybeScopeNotice(m, pkt, h.sender)
 		}
 	}
 }

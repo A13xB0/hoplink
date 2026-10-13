@@ -280,6 +280,9 @@ bridges:
                                   # top-level meshcore.flood_scope above
       # rx_scopes: ["myregion"]  # optional per-bridge override of the
                                   # top-level meshcore.rx_scopes above
+      # scope_notice:            # optional: reply when rx_scopes rejects a
+      #   scopes: ["otherregion"] # message in one of these scopes (see README)
+      #   message: "Not relayed: switch your region to myregion."
       # ignore_repeat_from: ["a1b2c3"]  # optional per-bridge override of the
                                   # top-level meshcore.ignore_repeat_from above
       # success_repeaters: ["d4e5f6"]  # optional per-bridge override of the

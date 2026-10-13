@@ -210,6 +210,39 @@ already relayed the original drop it as a duplicate — a retry only reaches
 repeaters that missed the first copy. Set `debug: true` to also log each
 individual copy and its path.
 
+### MeshCore: scope notices
+
+A bridge with `rx_scopes` silently drops messages flooded in any other
+scope. `scope_notice` tells the sender instead. Both are optional: leave
+`rx_scopes` out and every scope is relayed, as before; leave `scope_notice`
+out and rejected messages are dropped without a reply.
+
+```yaml
+- name: longfast
+  meshcore:
+    enabled: true
+    hashtag: "#longfast"
+    flood_scope: sco-admin           # what this bridge transmits in
+    rx_scopes: [fif, sco-admin]      # what it relays to Meshtastic
+    scope_notice:
+      scopes: [sco]                  # rejected scopes that get a reply
+      message: "Not relayed to Meshtastic: switch your region to sco-admin to reach LongFast."
+      # reply_scope: sco-admin       # default: this bridge's flood_scope
+      # name: hoplink                # sender name on the notice
+      # cooldown_s: 600              # per sender, 60-86400
+  meshtastic:
+    enabled: true
+    channel_name: "LongFast"
+```
+
+The notice is sent on the same channel as `hoplink: @[Sender] <message>` (the
+mention is dropped if it wouldn't fit in one message). Each sender gets at
+most one per `cooldown_s`, and a bridge sends at most one a minute. Only
+scopes listed in `scope_notice.scopes` get a reply: a scope can only be
+recognised by name, so unscoped messages and other scopes are dropped
+silently. Each notice, or rate-limited skip, is logged. A scope listed in
+both `rx_scopes` and `scope_notice.scopes` is a config error.
+
 ## Requirements
 
 - Go 1.26+ (see `go.mod`)
@@ -481,6 +514,7 @@ each other and want to reduce RF interference between them.
 | `meshcore.public`     | Use MeshCore's well-known default public channel — always registered at the device's fixed public slot (index 0) for device-side sync, unlike `hashtag`/`secret_hex` channels (see "MeshCore: two independent receive paths" above) |
 | `meshcore.flood_scope` | Optional per-bridge override of the top-level `meshcore.flood_scope`; `""`/unset = use the global default |
 | `meshcore.rx_scopes`  | Optional per-bridge override of the top-level `meshcore.rx_scopes`; empty/unset = use the global default |
+| `meshcore.scope_notice` | Optional, off by default. Replies on this bridge's MeshCore channel when a message arrives in a scope that `rx_scopes` rejects, so the sender knows it wasn't relayed. See [Scope notices](#meshcore-scope-notices) |
 | `meshcore.read_only`  | Optional, defaults to `false`. If `true`, this side only ever receives from MeshCore, never transmits |
 | `meshtastic.enabled`  | Turn on the Meshtastic side of this bridge                                           |
 | `meshtastic.channel_name` | Name of a channel slot **already configured on the attached device**             |
