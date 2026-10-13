@@ -362,6 +362,7 @@ See `config.example.yaml` for a fully annotated example. Summary:
 |-----------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `sender_format` | `none`  | `none` \| `short` \| `full` — how a relayed message's origin surface is shown in the sender name on every *other* destination: "Alice" (none), "Alice (MC)" (short), or "Alice (MeshCore)" (full). Applies wherever a message crosses Discord/MeshCore/Meshtastic. Override per-bridge with `sender_format` under that bridge. |
 | `debug`         | `false` | Logs every inbound message a bridge receives *and* every one it suppresses and why (our own echo, a duplicate delivery, or no configured channel matched it) — across all four entry points (MeshCore raw log, MeshCore device-side sync, Meshtastic, Discord). Useful for diagnosing "a message reached other devices but never made it to Discord/the other mesh"; noisy in normal operation since self-echo suppression alone fires on every message a bridge itself relays |
+| `dedup_window_s` | `0` | When > 0, merges a mesh message whose sender and text exactly match one already relayed on the same channel within this many seconds — e.g. someone hitting "resend" in their app, which creates a brand-new packet that per-packet dedup can't recognise. Each merge is logged. Off by default because two genuinely separate identical messages ("ok") inside the window are merged too. `0`–`3600` |
 
 ### `meshcore:` (top-level)
 
