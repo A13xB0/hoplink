@@ -63,11 +63,21 @@ func (b *Bridge) handleDiscordMessage(msg discord.IncomingMessage) {
 		return
 	}
 
-	if m.meshcoreEnabled {
-		b.sendMeshcoreFrom(m, senderName, msg.Content, msg.ChannelID, msg.MessageID)
-	}
-	if m.meshtasticEnabled {
-		b.sendMeshtastic(m, senderName, msg.Content)
+	// Mesh sends go through the single send worker (see Bridge.relayQ), so
+	// concurrent Discord messages go out in order and never interleave.
+	if m.meshcoreEnabled || m.meshtasticEnabled {
+		content, chanID, msgID := msg.Content, msg.ChannelID, msg.MessageID
+		queued := b.enqueueRelay(m.cfg.Name, func() {
+			if m.meshcoreEnabled {
+				b.sendMeshcoreFrom(m, senderName, content, chanID, msgID)
+			}
+			if m.meshtasticEnabled {
+				b.sendMeshtastic(m, senderName, content)
+			}
+		})
+		if !queued && m.meshcoreEnabled && !m.cfg.MeshCore.ReadOnly {
+			b.newDiscordReceipt(chanID, msgID, 1).settle(false) // dropped: show ⚠️ rather than nothing
+		}
 	}
 	b.relayDiscordToSiblings(m, msg.AuthorName, msg.Content)
 }
@@ -142,6 +152,8 @@ func (b *Bridge) transmitMeshcore(m *mapping, chunk string, tsUnix uint32, chunk
 // exactly once: directly if its first attempt never makes it out, otherwise
 // via reportDelivery when the send settles.
 func (b *Bridge) transmitMeshcoreFor(m *mapping, chunk string, tsUnix uint32, chunkIdx, chunkTotal, attempt int, rc *discordReceipt) {
+	b.meshcoreTxMu.Lock() // see Bridge.meshcoreTxMu
+	defer b.meshcoreTxMu.Unlock()
 	pkt, err := meshcore.BuildChannelPacket(m.secret, b.hashSize, m.scopeKey, chunk, tsUnix)
 	if err != nil {
 		logfMeshcore("TX bridge %q: building packet failed (chunk %d/%d): %v", m.cfg.Name, chunkIdx, chunkTotal, err)
