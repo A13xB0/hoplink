@@ -35,6 +35,11 @@ var writeTimeout = 10 * time.Second
 // rather than waiting out the real interval.
 var keepAliveInterval = 60 * time.Second
 
+// heartbeatToRadio is a ToRadio carrying an empty Heartbeat (field 7,
+// length-delimited, zero length). The vendored meshtastic-go predates the
+// heartbeat field, so the two bytes are written out directly.
+var heartbeatToRadio = []byte{0x3a, 0x00}
+
 // wellKnownPrimaryNames are names that should resolve to the device's
 // primary channel (index 0) even if that slot's own stored Settings.Name is
 // empty — which it commonly is, since primary channels are usually
