@@ -80,6 +80,11 @@ type Session struct {
 	// OUR packet apart from it queueing its own periodic broadcasts
 	// (telemetry/nodeinfo/position also produce QueueStatus replies).
 	sentIDs map[uint32]time.Time
+	// ackIDs are packet IDs this session sent with want_ack, kept until the
+	// device reports whether the mesh rebroadcast them (logRoutingResult).
+	// Separate from sentIDs, which QueueStatus consumes at once: the device
+	// may retransmit for a minute or more before it gives its answer.
+	ackIDs map[uint32]time.Time
 
 	textCh   chan TextMessage
 	closed   chan struct{}
@@ -113,6 +118,7 @@ func newSessionOverConn(conn net.Conn) (*Session, error) {
 		nodeNames: make(map[uint32]string),
 		channels:  make(map[string]uint32),
 		sentIDs:   make(map[uint32]time.Time),
+		ackIDs:    make(map[uint32]time.Time),
 		textCh:    make(chan TextMessage, 32),
 		closed:    make(chan struct{}),
 	}
@@ -144,6 +150,12 @@ func (s *Session) writeToRadio(msg *generated.ToRadio) error {
 	if err != nil {
 		return fmt.Errorf("meshtastic: marshalling ToRadio: %w", err)
 	}
+	return s.writeFrame(data)
+}
+
+// writeFrame frames an already-marshalled ToRadio and writes it under the
+// write deadline (see writeToRadio).
+func (s *Session) writeFrame(data []byte) error {
 	frame, err := encodeFrame(data)
 	if err != nil {
 		return fmt.Errorf("meshtastic: framing ToRadio: %w", err)
@@ -158,30 +170,21 @@ func (s *Session) writeToRadio(msg *generated.ToRadio) error {
 	return err
 }
 
-// keepAliveLoop periodically writes the same harmless wake/padding sequence
-// used to wake a sleeping device on connect (wakeSequence — unframed bytes
-// that any correctly-implemented frameReader, ours included, silently skips
-// while resyncing on the real start1/start2 marker), so this TCP connection
-// sees regular traffic even on a quiet mesh channel. Companion connections
-// routinely get dropped by NAT/router idle-connection timeouts when no
-// traffic flows for a while; comfortably undercutting that keeps the
-// mapping alive. Write failures are logged only: readLoop will observe the
-// same dead connection and close Session, which the caller (bridge/main)
-// reconnects.
+// keepAliveLoop periodically sends a ToRadio heartbeat, as the official
+// clients do, so this connection sees regular traffic even on a quiet mesh
+// channel. It must be a framed message: the device (and RepeaterTastic)
+// drops a client that sends no message for 15 minutes, and raw wake bytes
+// are skipped by its frame reader without counting. The same traffic keeps
+// NAT and router idle timeouts from dropping the connection. A write
+// failure closes the connection (writeFrame), so readLoop ends the session
+// and the caller (bridge/main) reconnects.
 func (s *Session) keepAliveLoop() {
 	ticker := time.NewTicker(keepAliveInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			s.writeMu.Lock()
-			_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-			_, err := s.conn.Write(wakeSequence())
-			if err != nil {
-				_ = s.conn.Close() // unblock readLoop so the session tears down
-			}
-			s.writeMu.Unlock()
-			if err != nil {
+			if err := s.writeFrame(heartbeatToRadio); err != nil {
 				logf("keepalive write failed: %v", err)
 			}
 		case <-s.closed:
@@ -313,6 +316,52 @@ func (s *Session) logQueueStatus(qs *generated.QueueStatus) {
 	logf("TX device queued our packet id %#08x for transmit (radio queue free %d/%d)", qs.MeshPacketId, qs.Free, qs.Maxlen)
 }
 
+// rememberAckID records a want_ack packet this session sent, so the
+// device's routing result for it can be reported (logRoutingResult).
+func (s *Session) rememberAckID(id uint32) {
+	now := time.Now()
+	s.mu.Lock()
+	for old, at := range s.ackIDs {
+		if now.Sub(at) > ackResultWait {
+			delete(s.ackIDs, old)
+		}
+	}
+	s.ackIDs[id] = now
+	s.mu.Unlock()
+}
+
+// ackResultWait bounds how long a sent packet's routing result is waited
+// for. The firmware gives up after its retransmissions, well within this.
+const ackResultWait = 10 * time.Minute
+
+// logRoutingResult reports what the device found for a want_ack packet this
+// session sent. For a broadcast, NONE means a node was heard rebroadcasting
+// it (Meshtastic's implicit ack); MAX_RETRANSMIT means the device retried
+// and no node ever did. Results for other packets (the device's own
+// broadcasts, other clients) are ignored.
+func (s *Session) logRoutingResult(requestID uint32, payload []byte) {
+	s.mu.Lock()
+	_, ours := s.ackIDs[requestID]
+	delete(s.ackIDs, requestID)
+	s.mu.Unlock()
+	if !ours {
+		return
+	}
+	var r generated.Routing
+	if err := proto.Unmarshal(payload, &r); err != nil {
+		logf("TX packet id %#08x: unreadable routing result: %v", requestID, err)
+		return
+	}
+	switch reason := r.GetErrorReason(); reason {
+	case generated.Routing_NONE:
+		logf("TX packet id %#08x delivered: a node rebroadcast it", requestID)
+	case generated.Routing_MAX_RETRANSMIT:
+		logf("TX packet id %#08x NOT delivered: no node rebroadcast it after the device's retries", requestID)
+	default:
+		logf("TX packet id %#08x NOT delivered: the device reported %s", requestID, reason)
+	}
+}
+
 // handlePacket extracts text messages (TEXT_MESSAGE_APP) for delivery and
 // opportunistically updates the node DB from live NODEINFO_APP broadcasts.
 func (s *Session) handlePacket(pkt *generated.MeshPacket) {
@@ -356,6 +405,8 @@ func (s *Session) handlePacket(pkt *generated.MeshPacket) {
 		default: // drop if the consumer is falling behind
 			logf("RX dropped text message from %s: consumer is falling behind", msg.FromName)
 		}
+	case generated.PortNum_ROUTING_APP:
+		s.logRoutingResult(decoded.Decoded.RequestId, decoded.Decoded.Payload)
 	case generated.PortNum_NODEINFO_APP:
 		var user generated.User
 		if err := proto.Unmarshal(decoded.Decoded.Payload, &user); err == nil {
@@ -466,11 +517,17 @@ func (s *Session) SendText(channelName, text string, hopLimit uint32) error {
 // it as the same packet rather than a new message.
 func (s *Session) SendTextOnChannel(channelIndex uint32, text string, hopLimit, packetID uint32) error {
 	s.rememberSentID(packetID)
+	s.rememberAckID(packetID)
 	pkt := &generated.MeshPacket{
 		To:       BroadcastAddr,
 		Channel:  channelIndex,
 		Id:       packetID,
 		HopLimit: hopLimit,
+		// want_ack on a broadcast: the device retransmits until it hears a
+		// node rebroadcast the packet, then reports the outcome as a
+		// ROUTING_APP result (logRoutingResult). Without it a broadcast that
+		// no node happens to hear is aired once and lost.
+		WantAck: true,
 		PayloadVariant: &generated.MeshPacket_Decoded{Decoded: &generated.Data{
 			Portnum: generated.PortNum_TEXT_MESSAGE_APP,
 			Payload: []byte(text),
