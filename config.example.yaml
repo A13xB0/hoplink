@@ -162,17 +162,15 @@ meshtastic:               # required only if some bridge has meshtastic.enabled:
                       # to this node (e.g. 3 on a small/dense mesh to cut
                       # airtime and collisions); 0 sends to direct neighbours
                       # only, with no rebroadcast at all.
-  retry_on_no_repeat: false  # when true, retransmit an outgoing meshtastic
-                      # message once if we never hear it repeated back by the
-                      # mesh (no self-echo observed) within a few seconds of
-                      # sending — mirrors meshcore.retry_on_no_repeat above.
-                      # Disabled by default for the same reason: a missing
-                      # repeat is also normal on a small/direct-route mesh,
-                      # and this doubles airtime for every message it
-                      # triggers on. Unlike MeshCore, the Meshtastic client
-                      # API doesn't expose which node rebroadcast a message,
-                      # so the log can only confirm a repeat was heard, not
-                      # name the repeater.
+  retry_on_no_repeat: false  # leave off: outgoing Meshtastic messages are
+                      # sent with want_ack, so the device itself retransmits
+                      # until it hears a node rebroadcast them, and the log
+                      # says "delivered" or "NOT delivered" for each one.
+                      # When true, hoplink also retransmits once if it never
+                      # sees its own message repeated back. Most firmware
+                      # drops a rebroadcast of its own packet before the
+                      # client API, so in practice this resends every
+                      # message, doubling airtime.
   chunk_delay_ms: 0   # extra pause (milliseconds) held between each piece of
                       # a message split across multiple Meshtastic chunks —
                       # see meshcore.chunk_delay_ms above; same idea, applied

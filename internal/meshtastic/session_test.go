@@ -1,7 +1,7 @@
 package meshtastic
 
 import (
-	"io"
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -566,7 +566,11 @@ func TestSession_WriteTimeoutClosesSession(t *testing.T) {
 	}
 }
 
-func TestSession_KeepAliveLoop_WritesPeriodicWakeBytes(t *testing.T) {
+// The keepalive must be a framed ToRadio heartbeat. Raw wake bytes are
+// skipped by the far end's frame reader without counting as a message, so a
+// server that drops idle clients (meshtasticd, RepeaterTastic: 15 minutes)
+// disconnected us four times an hour on a quiet channel.
+func TestSession_KeepAliveLoop_SendsHeartbeat(t *testing.T) {
 	orig := keepAliveInterval
 	keepAliveInterval = 20 * time.Millisecond
 	t.Cleanup(func() { keepAliveInterval = orig })
@@ -629,13 +633,11 @@ func TestSession_KeepAliveLoop_WritesPeriodicWakeBytes(t *testing.T) {
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	buf := make([]byte, wakeByteCount)
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("expected a keepalive wake sequence to arrive, got: %v", err)
+	frame, err := newFrameReader(conn).readFrame()
+	if err != nil {
+		t.Fatalf("expected a framed keepalive to arrive, got: %v", err)
 	}
-	for i, b := range buf {
-		if b != start2 {
-			t.Fatalf("keepalive byte[%d] = %#x, want %#x (start2)", i, b, start2)
-		}
+	if !bytes.Equal(frame, heartbeatToRadio) {
+		t.Fatalf("keepalive frame = % x, want the ToRadio heartbeat % x", frame, heartbeatToRadio)
 	}
 }
